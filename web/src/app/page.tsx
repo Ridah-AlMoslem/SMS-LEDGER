@@ -1,4 +1,5 @@
-import { asc, desc, eq, isNull } from "drizzle-orm";
+import { asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import Link from "next/link";
 
 import { AccountsOverview } from "@/components/accounts-overview";
 import { getDb, schema } from "@/db";
@@ -73,7 +74,12 @@ async function load() {
     .where(isNull(schema.reconciliationAlerts.resolvedAt))
     .orderBy(desc(schema.reconciliationAlerts.detectedAt))) as Alert[];
 
-  return { accounts, transactions, alerts };
+  const [parked] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(schema.rawMessages)
+    .where(inArray(schema.rawMessages.status, ["needs_review", "failed"]));
+
+  return { accounts, transactions, alerts, parked: parked?.count ?? 0 };
 }
 
 function Notice({ title, body }: { title: string; body: string }) {
@@ -108,7 +114,24 @@ export default async function Page() {
 
   return (
     <main className="mx-auto w-full max-w-2xl p-6 pb-16">
-      <h1 className="text-xl font-semibold">Ledger</h1>
+      <div className="flex items-baseline justify-between">
+        <h1 className="text-xl font-semibold">Ledger</h1>
+        <Link
+          href="/review"
+          className={`text-sm ${
+            data.parked > 0
+              ? "text-amber-600 dark:text-amber-400"
+              : "opacity-60 hover:opacity-100"
+          }`}
+        >
+          Review
+          {data.parked > 0 && (
+            <span className="ml-1.5 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs">
+              {data.parked}
+            </span>
+          )}
+        </Link>
+      </div>
 
       <div className="mt-6">
         {groups.length === 0 ? (

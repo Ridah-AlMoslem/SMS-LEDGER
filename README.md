@@ -126,12 +126,18 @@ first time you redeem points earned before tracking began (§9.2).
 ## Running it
 
 ```bash
-python3 tests/run_all.py          # everything: pure logic + real Postgres
+python3 tests/run_all.py          # parser + persistence: 14 suites
 python3 tests/run_all.py --fast   # pure logic only, ~1s, no Node required
 
-cd web && npm run dev             # web only
+cd web
+npm run test:ui                   # accounts + review view logic
+npm run dev                       # web only
 vercel dev                        # both services, Vercel routing applied
 ```
+
+The app has two screens: `/` is the ledger — net worth, accounts grouped by bank, recent
+transactions — and `/review` is everything the parser could not handle, grouped by message
+shape so one fix clears a whole cluster.
 
 ## Testing
 
@@ -222,7 +228,7 @@ Full table in `SPEC.md` §12.
 | 4 | Template engine | **Done in-memory** — template CRUD and persistence not built |
 | 5 | Gemini fallback | Deferred past v1 |
 | 6 | Transaction writer | **Mostly done** — claim, parse, post, balances, reconciliation |
-| 7 | Manual workbench | Not started |
+| 7 | Manual workbench | **Queue done** — grouped by shape, retry/dismiss. Template derivation not built |
 
 A signed message goes in one end and comes out as a transaction on the page, account balances
 move, and drift against the bank's own figures raises a visible alert.
@@ -237,6 +243,9 @@ What this does *not* yet do, in rough priority order:
 - **Top-up linking is not applied on the DB path.** `link_topups` is a cross-transaction pass
   and only runs in the in-memory pipeline. Until it is wired, a wallet top-up and the spend it
   funds both count — the simulation measures this as +320 phantom expense over two months.
+- **Templates cannot be derived from the review screen yet.** Retry reprocesses a group, but
+  you still add the template by hand in `registry.py`. This is the piece that makes a new bank
+  cheap — hand-process one message, resolve the other forty-nine.
 - **`template_id` is written as NULL** on every parse, so there is no record of which template
   matched and `hit_count` never climbs.
 - **Templates live in code, not the database.** `sms_templates` is created and empty;

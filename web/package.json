@@ -12,7 +12,9 @@
     "db:seed": "node scripts/run-sql.mjs scripts/seed.local.sql",
     "db:sql": "node scripts/run-sql.mjs",
     "db:test": "node scripts/pgserver.mjs",
-    "test:accounts": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning scripts/verify-accounts-view.mjs"
+    "test:accounts": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning scripts/verify-accounts-view.mjs",
+    "test:review": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning scripts/verify-review-view.mjs",
+    "test:ui": "npm run test:accounts && npm run test:review"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",

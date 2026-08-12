@@ -62,6 +62,32 @@ tpl("AR-07", "AlRajhiBank", "cashback_redeem", None,
     lambda m: dict(amount=parse_amount(m[1]), card=last_digits(m[2]), direction="credit"))
 
 # -------------------------------- SAIB ---------------------------------
+# Incoming from another institution. The sender name here is the account
+# holder's own, at ANB — §8.2 again: the NAME decides nothing. Whether this is
+# an internal move or external income depends entirely on whether the sending
+# account is a registered identifier.
+tpl("SA-01", "SAIB", "transfer", "MM-DD",
+    rf"^حوالة واردة: محلية \(مقبوله\)\nمن:\s*(\S+)\n(.+)\nعبر:\s*(.+)\n"
+    rf"مبلغ:\s*SAR\s*{A}\nالي:\s*(\S+)\nفي:\s*{DT}$",
+    lambda m: dict(from_account=last_digits(m[1]),
+                   counterparty_account=last_digits(m[1]),
+                   counterparty=m[2].strip(), counterparty_bank=m[3].strip(),
+                   amount=parse_amount(m[4]), to_account=last_digits(m[5]),
+                   date_raw=m[6].strip(), direction="credit"))
+
+# Outgoing to another institution. Same `الي` collision as STC: the recipient
+# NAME and the recipient ACCOUNT both normalize to the same label, so only line
+# order separates them.
+tpl("SA-03", "SAIB", "transfer", "MM-DD",
+    rf"^حوالة محلية\nالمصرف\s*(.+)\nالمبلغ\s*SAR\s*{A}\nمن\s*(\S+)\n"
+    rf"الي:\s*(.+)\nالي\s*(\S+)\nالرسوم\s*SAR\s*{A}\nفي\s*{DT}$",
+    lambda m: dict(counterparty_bank=m[1].strip(), amount=parse_amount(m[2]),
+                   from_account=last_digits(m[3]), counterparty=m[4].strip(),
+                   to_account=last_digits(m[5]),
+                   counterparty_account=last_digits(m[5]),
+                   fee_amount=parse_amount(m[6]), date_raw=m[7].strip(),
+                   direction="debit"))
+
 tpl("SA-02", "SAIB", "transfer", "MM-DD",
     rf"^حوالة صادرة: بين حساباتك\nمن:\s*(\S+)\nمبلغ:\s*SAR\s*{A}\nالي:\s*(\S+)\nفي:\s*{DT}$",
     lambda m: dict(from_account=last_digits(m[1]), amount=parse_amount(m[2]),

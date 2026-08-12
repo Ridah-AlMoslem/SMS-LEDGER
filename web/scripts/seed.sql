@@ -121,6 +121,29 @@ ON CONFLICT (institution, kind, value) DO NOTHING;
 --
 -- Likewise the AlRajhi current account: no message in the samples names it,
 -- so its masked digits are unknown.
+--
+-- TWO OPEN QUESTIONS, both worth money:
+--
+-- 1. ANB. Two messages receive money from an account in YOUR name at ANB —
+--    SAIB `XXXX0018 / RIDAH AL MOSLEM` and STC `*692 / RIDAH MOSLEM`. If those
+--    are your accounts, add them and the transfers become internal moves; today
+--    they count as money arriving from outside. Different last-4, so possibly
+--    two ANB accounts:
+--
+--    SELECT id, 'SAIB', 'account', '0018' FROM accounts WHERE slug = 'anb_current'
+--
+--    (needs an `anb_current` account row first).
+--
+-- 2. Barq's account number as SAIB sees it. SAIB sends to
+--    `BARQ SAFE AND DEPOSIT CLIENT MONEY` account `X1625`, and Barq's own
+--    purchase messages cite `حساب:**1625`. If 1625 is your wallet rather than
+--    Barq's pooled client account, that 4,534.07 transfer is a move into your
+--    own wallet, not spending:
+--
+--    SELECT id, 'SAIB', 'account', '1625' FROM accounts WHERE slug = 'barq'
+--
+--    Left out until confirmed. A missing identifier overstates expense, which
+--    is visible and correctable; a wrong one hides real spending, which is not.
 
 COMMIT;
 

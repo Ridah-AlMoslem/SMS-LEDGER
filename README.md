@@ -80,15 +80,23 @@ vercel.json          Services routing
 
 ## Setup
 
-**1. Fill in the environment.** `web/.env.local` and `api/.env` already exist and are
-gitignored. `INGEST_SECRET` and `CRON_SECRET` are generated; the Supabase values are not:
+**1. Fill in the environment.** Both files already exist and are gitignored:
+`web/.env.local` and `api/.env`. `INGEST_SECRET` and `CRON_SECRET` are already generated.
 
-| Variable | Where to get it |
-|---|---|
-| `DATABASE_URL` | Supabase → Project Settings → Database → Connection string (URI). Use the **pooled** connection, port **6543**. Goes in both files. |
-| `DIRECT_URL` | Same page, **direct** connection, port **5432**. `web/.env.local` only — migrations need it. |
-| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Project Settings → API |
-| `SUPABASE_SERVICE_ROLE_KEY` | Same page. Server-side only — never expose it to the browser. |
+Only **two values** are needed to run — both from Supabase → **Connect** → Connection string →
+URI. They differ only by port, and that port is load-bearing:
+
+| Variable | Port | Goes in | Why |
+|---|---|---|---|
+| `DATABASE_URL` | **6543** | both files | Transaction pooler. Reuses connections aggressively, which is what serverless needs. Cannot run migrations. |
+| `DIRECT_URL` | **5432** | `web/.env.local` | Direct/session connection, full Postgres features. Migrations need this one. |
+
+Replace `[YOUR-PASSWORD]` in the string with your database password.
+
+The remaining keys (`NEXT_PUBLIC_SUPABASE_URL`, publishable, secret) are for Supabase Auth at
+milestone 8. Nothing reads them yet — leave them blank. When you do fill them, use the new
+`sb_publishable_…` / `sb_secret_…` format; the legacy `anon` and `service_role` JWTs still work
+but are deprecated by end of 2026.
 
 **2. Apply the migration and seed your accounts.**
 

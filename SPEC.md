@@ -12,7 +12,7 @@ A single-user web dashboard that builds a complete personal financial ledger fro
 
 **Data flow:** iPhone Shortcut → HTTPS ingest API → raw message store → parser (template-first, LLM fallback) → normalized transactions → dashboard.
 
-**Locale:** Bank SMS arrive in **both Arabic and English**, sometimes mixed within one message. Base currency: SAR.
+**Locale:** Every message from every sender is **Arabic**. Merchant names are often Latin (`لدى: TAMIMI MARKETS`), which makes a message look bilingual but does not change how it parses. Confirmed 2026-08-12: no English-language message has been observed from any sender, and none is expected — the system is single-language by decision, not by omission. Base currency: SAR.
 
 **Currency:** all accounting is single-currency — every transaction settles in SAR, and the bank always states the SAR total. But foreign purchases are common (USD, GBP observed in the first sample batch), so we store **FX provenance** alongside: original amount, original currency, rate, and fee. That is metadata, not multi-currency accounting.
 
@@ -764,7 +764,7 @@ pending messages
   → reconcile computed vs reported balance           (§3.3)
 ```
 
-### 10.4 Arabic + English normalization
+### 10.4 Arabic normalization
 
 Run **before** hashing or regex matching. Every step here is a real failure mode, not defensive padding:
 
@@ -776,9 +776,9 @@ Run **before** hashing or regex matching. Every step here is a real failure mode
 - **Unify letterforms**: `أإآ`→`ا`, `ى`→`ي`, `ة`→`ه`. Keep the original for display.
 - **Strip the optional definite article** on known field labels: `المبلغ`→`مبلغ`, `الرصيد`→`رصيد`. Both spellings occur within a single sender.
 - **Normalize currency tokens**: `ر.س`, `ريال`, `رس`, `SAR`, `SR` → `SAR`. (`رس`, without the dot, appears in STC messages.)
-- **Detect language** by presence of the Arabic Unicode block; tag `ar` / `en` / `mixed`.
+- **Tag the language** by presence of the Arabic Unicode block: `ar`, or `en` when there is no Arabic at all. A Latin merchant name does not make a message English.
 
-Keep separate template sets per language — the same bank sends structurally different Arabic and English messages.
+**Language is a canary, not a routing decision.** All 29 templates are Arabic and no per-language template sets exist, because no English message has ever arrived. Tagging the row costs nothing and means a sender switching to English shows up as a labelled row rather than as an unexplained arrival in the review queue. If that ever happens, the template set forks then — not in advance.
 
 **Normalize before shape-hashing, not only before merchant matching.** AlRajhi writes both `شراء إنترنت` and `شراء انترنت` for the same template; STC writes both `في:` and `فى:`. Unnormalized, each spelling hashes to a different shape and is learned as a separate template — doubling LLM cost and letting the two copies drift apart. Order: strip bidi → collapse whitespace → unify letterforms → strip article → hash.
 
@@ -1031,7 +1031,7 @@ Milestones 1–7 are the actual product. Everything after is presentation over d
 
 ## 13. Testing priorities
 
-- **Normalizer unit tests** with real Arabic and English samples from each bank — the highest-value tests in the project
+- **Normalizer unit tests** with real samples from each bank — the highest-value tests in the project. There is one deliberate English fixture, and its job is to prove an English message PARKS rather than parses.
 - **Golden-file parser tests**: fixture SMS → expected transaction JSON. Every parser change replays them.
 - **Accounting invariants** as property tests: internal transfers net to zero; expense excludes card payments and loan principal; `Δ net_worth == income − expense`; `computed_balance == reported_balance` for every fixture stream.
 - **Period math**, run over a multi-year date range (`tests/verify_periods.py` already does this): every date falls inside exactly one cycle; cycles are contiguous with no gaps or overlaps; boundaries are stable under re-application; labels are unique; observed lengths are exactly {28, 29, 30, 31}.
@@ -1102,8 +1102,10 @@ earned before tracking began (§9.2).
 
 Not blockers; the review queue is the designed response to each.
 
-- **No English-language message has ever been observed** from any sender, in any batch. The
-  bilingual template sets exist but the English side is entirely untested against real text.
+- **English is out of scope by decision** (confirmed 2026-08-12), not an untested gap. An
+  English message still classifies safely — an English OTP or decline is ignored, anything
+  else parks — and is tagged `language='en'` so a sender switching would be visible
+  immediately rather than silently swelling the review queue.
 - **Never yet seen:** declined transactions, card statement notices, BNPL. Each will arrive as
   an unknown shape and park in review rather than being dropped (§10.5).
 - **The AlRajhi side of a Barq top-up** — the funding purchase message. Attested only through

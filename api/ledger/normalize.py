@@ -26,10 +26,22 @@ def normalize(text: str) -> str:
     return "\n".join(line.strip() for line in t.split("\n")).strip()
 
 def detect_language(text: str) -> str:
-    ar, la = bool(ARABIC.search(text)), bool(LATIN.search(text))
-    # Latin merchant names inside an Arabic body are not "mixed" — require a Latin *word*
-    if ar and re.search(r"[A-Za-z]{3,}\s+[A-Za-z]{3,}", text): return "mixed"
-    return "ar" if ar else ("en" if la else "unknown")
+    """Which parsing rules a message needs: 'ar', 'en', or 'unknown'.
+
+    Every attested format from every sender is Arabic, and no English message
+    has ever arrived. So this is not a routing decision — it is a canary. A row
+    tagged 'en' means a sender started writing in English, which no template
+    covers and which would otherwise only show up as an unexplained arrival in
+    the review queue.
+
+    A Latin MERCHANT NAME does not make a message English. `لدى: TAMIMI MARKETS`
+    is an Arabic message about a shop with a Latin name, and an earlier version
+    of this function called that 'mixed' — which fired on most normal purchases
+    and made the signal useless. Presence of the Arabic block decides it.
+    """
+    if ARABIC.search(text):
+        return "ar"
+    return "en" if LATIN.search(text) else "unknown"
 
 SCRIPT_EDGE = re.compile(
     r"(?<=[؀-ۿ])(?=[A-Za-z0-9#])|(?<=[A-Za-z0-9#])(?=[؀-ۿ])"   # Arabic <-> Latin/digit

@@ -186,6 +186,23 @@ def main():
         check("OTP produced zero transactions",
               conn.execute("SELECT count(*) c FROM transactions").fetchone()["c"], 0)
 
+        print("\n[6b] LANGUAGE IS RECORDED, NOT LEFT NULL")
+        # A canary, not a routing decision: every attested format is Arabic, so
+        # a row tagged 'en' means a sender switched languages (SPEC §10.4).
+        check("the OTP row is tagged Arabic",
+              conn.execute("SELECT language FROM raw_messages").fetchone()["language"], "ar")
+        reset(conn)
+        ingest(conn, "SAIB",
+               "Dear customer, a purchase of SAR 250.00 was made on your account XXX7001.",
+               datetime(2026, 8, 12, 12, 0, tzinfo=UTC))
+        conn.commit()
+        run_tick(conn, identifiers, slug_to_id)
+        row = conn.execute("SELECT status, language FROM raw_messages").fetchone()
+        check("an English message is tagged 'en'", row["language"], "en")
+        check("and parks rather than parsing", row["status"], "needs_review")
+        check("posting nothing",
+              conn.execute("SELECT count(*) c FROM transactions").fetchone()["c"], 0)
+
         print("\n[7] CLAIM SAFETY  (§10.6)")
         reset(conn)
         ingest(conn, *SALARY, datetime(2026, 6, 25, 14, 4, tzinfo=UTC))

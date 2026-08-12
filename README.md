@@ -2,8 +2,8 @@
 
 Builds a complete personal financial ledger out of bank SMS messages.
 
-Saudi bank SMS arrive in Arabic and English, often mixed inside a single message, with
-inconsistent date formats, inconsistent account masking, and bidirectional-text artifacts.
+Saudi bank SMS arrive in Arabic, with Latin merchant names embedded, inconsistent date
+formats, inconsistent account masking, and bidirectional-text artifacts.
 This repo parses them into a double-entry ledger and puts a dashboard on top.
 
 Full design: [`SPEC.md`](SPEC.md). Simulation results and the six bugs it caught:
@@ -129,7 +129,7 @@ first time you redeem points earned before tracking began (§9.2).
 ## Running it
 
 ```bash
-python3 tests/run_all.py          # parser + persistence: 20 suites
+python3 tests/run_all.py          # parser + persistence: 21 suites
 python3 tests/run_all.py --fast   # pure logic only, ~1s, no Node required
 
 cd web
@@ -193,6 +193,15 @@ card reduces debt. Special-casing liability signs is where the sign errors came 
 
 **One message can produce two legs.** Internal transfers, card payments, and cashback
 redemption each describe both sides of a movement in a single SMS.
+
+**The system is single-language by decision.** Every attested format from every sender is
+Arabic, and English is out of scope (confirmed 2026-08-12) — not a gap waiting to be filled.
+A Latin merchant name does not make a message English. But classification still recognises
+English OTPs and declines, deliberately: those patterns are not there to parse English, they
+are there so an English OTP is DISCARDED rather than booked. §7.1 calls an OTP reaching the
+ledger the most expensive misclassification in the system. Every row is tagged `ar` or `en`, so
+a sender switching language shows up as a labelled row rather than an unexplained arrival in
+the review queue.
 
 **The shape hash identifies a FORMAT, not a message.** Numbers become `#`, masked accounts
 become `X`, and free text below the first line becomes `T`. That last rule is what stops a

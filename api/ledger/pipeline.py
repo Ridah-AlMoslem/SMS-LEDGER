@@ -7,7 +7,7 @@ move on both sides and `d(net worth) == income - expense` still holds.
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from .normalize import normalize, shape_hash
+from .normalize import detect_language, normalize, shape_hash
 from .classify import classify
 from .registry import match
 from .dates import parse as parse_date, DateError
@@ -36,6 +36,7 @@ class ParseResult:
     """
     status: str                       # 'parsed' | 'ignored' | 'needs_review'
     shape: str
+    language: str = "unknown"
     kind: str | None = None
     template_id: str | None = None
     ignored_reason: str | None = None
@@ -57,21 +58,22 @@ def parse_message(sender, body, received_at, identifiers,
     here, because an OTP carrying an amount silently doubles a real payment.
     """
     shape = shape_hash(body)
+    lang = detect_language(body)
     c = classify(body, sender)
 
     if c["ledger_effect"] == "none":
-        return ParseResult(status="ignored", shape=shape, kind=c["kind"],
+        return ParseResult(status="ignored", shape=shape, language=lang, kind=c["kind"],
                            ignored_reason=c["kind"])
     if c["ledger_effect"] == "review":
-        return ParseResult(status="needs_review", shape=shape, kind=c["kind"],
+        return ParseResult(status="needs_review", shape=shape, language=lang, kind=c["kind"],
                            error=c.get("note", "classified but not actionable"))
     if c["kind"] not in LEDGER_KINDS and c["ledger_effect"] != "snapshot":
-        return ParseResult(status="needs_review", shape=shape, kind=c["kind"],
+        return ParseResult(status="needs_review", shape=shape, language=lang, kind=c["kind"],
                            error=f"unhandled class {c['kind']}")
 
     tp, f = match(sender, body, templates)
     if tp is None:
-        return ParseResult(status="needs_review", shape=shape, kind=c["kind"],
+        return ParseResult(status="needs_review", shape=shape, language=lang, kind=c["kind"],
                            error="no template matched")
 
     ts = received_at
@@ -79,7 +81,7 @@ def parse_message(sender, body, received_at, identifiers,
         try:
             ts = parse_date(tp["date_format"], f["date_raw"], received_at)
         except (DateError, KeyError) as e:
-            return ParseResult(status="needs_review", shape=shape, kind=tp["kind"],
+            return ParseResult(status="needs_review", shape=shape, language=lang, kind=tp["kind"],
                                template_id=tp["id"], error=f"date: {e}")
 
     acct = _resolve_account(sender, tp, f, identifiers)
@@ -87,7 +89,7 @@ def parse_message(sender, body, received_at, identifiers,
         # Never dropped. An unresolved account means a provisional account in
         # the workbench, because the alternative is silently losing every
         # message from a newly opened account (SPEC §8.3).
-        return ParseResult(status="needs_review", shape=shape, kind=tp["kind"],
+        return ParseResult(status="needs_review", shape=shape, language=lang, kind=tp["kind"],
                            template_id=tp["id"], error="unresolved account")
 
     cycle = _cycle_for(tp, f, ts)
@@ -105,7 +107,8 @@ def parse_message(sender, body, received_at, identifiers,
     ]
 
     return ParseResult(
-        status="parsed", shape=shape, kind=tp["kind"], template_id=tp["id"],
+        status="parsed", shape=shape, language=lang, kind=tp["kind"],
+        template_id=tp["id"],
         cycle=cycle, posted_at=ts, legs=legs,
         snapshot=(dict(account=acct, balance=f["balance"], ts=ts)
                   if f.get("balance") is not None else None))

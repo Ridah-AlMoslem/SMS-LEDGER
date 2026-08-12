@@ -25,7 +25,7 @@ PURE = [
     "verify_batch3.py", "verify_accounting.py", "verify_lifecycle.py",
     "verify_pairing.py", "verify_topup.py", "verify_topup_link.py", "verify_stc.py",
     "verify_barq.py", "verify_saib.py", "verify_alrajhi.py",
-    "verify_derive.py", "verify_shapes.py",
+    "verify_derive.py", "verify_shapes.py", "verify_language.py",
     "simulate_two_months.py",
 ]
 

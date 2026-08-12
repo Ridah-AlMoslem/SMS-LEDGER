@@ -132,6 +132,17 @@ def claim_pending(conn, limit: int = 50) -> list[dict]:
 MAX_ATTEMPTS = 3
 
 
+def _language(value: str | None) -> str | None:
+    """Only values the `language` enum accepts.
+
+    Every attested format is Arabic, so this is a canary rather than a routing
+    decision: a row tagged 'en' means a sender started writing in English, which
+    no template covers. 'unknown' has no enum member and is stored as NULL —
+    absence of Arabic AND of Latin means there was nothing to judge.
+    """
+    return value if value in ("ar", "en") else None
+
+
 def record_outcome(conn, message_id, result, slug_to_id) -> int:
     """Write one message's parse result. Returns the number of legs posted.
 
@@ -145,10 +156,12 @@ def record_outcome(conn, message_id, result, slug_to_id) -> int:
             """
             UPDATE raw_messages
             SET status = %s, ignored_reason = %s, template_id = NULL,
-                shape_hash = %s, last_error = %s, processed_at = now()
+                shape_hash = %s, language = %s::language,
+                last_error = %s, processed_at = now()
             WHERE id = %s
             """,
-            (result.status, result.ignored_reason, result.shape, result.error, message_id),
+            (result.status, result.ignored_reason, result.shape,
+             _language(result.language), result.error, message_id),
         )
         return 0
 
@@ -207,10 +220,10 @@ def record_outcome(conn, message_id, result, slug_to_id) -> int:
         """
         UPDATE raw_messages
         SET status = 'parsed', template_id = NULL, shape_hash = %s,
-            last_error = NULL, processed_at = now()
+            language = %s::language, last_error = NULL, processed_at = now()
         WHERE id = %s
         """,
-        (result.shape, message_id),
+        (result.shape, _language(result.language), message_id),
     )
     return posted
 

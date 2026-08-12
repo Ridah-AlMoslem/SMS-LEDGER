@@ -11,6 +11,15 @@ from .normalize import normalize
 # whole_body=True means the pattern must describe the ENTIRE message, not a line.
 # Without it, `رصيد: 10720.52 SR` inside a card-payment message classifies the
 # whole thing as a balance alert and the payment silently vanishes.
+#
+# The ENGLISH patterns below stay even though every attested message is Arabic
+# and English is out of scope (SPEC §1). They are not there to parse English —
+# no English template exists — they are there so an English OTP or decline is
+# still DISCARDED rather than treated as a transaction. Classification failing
+# open is the expensive direction: §7.1 calls an OTP reaching the ledger the
+# single most costly misclassification in the system, because it silently
+# doubles an authorised payment. Deleting these as dead code would remove a
+# guard, not clutter.
 RULES = [
  ("otp", "none", [
     r"رمز التحقق", r"كلمة مرور لمرة واحدة", r"لا تشارك الرمز", r"رمز:\s*\d",

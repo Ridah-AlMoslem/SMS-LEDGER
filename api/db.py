@@ -13,10 +13,12 @@ through `money()` first — binding a float to NUMERIC(14,2) is how you get
 from __future__ import annotations
 
 import os
+import re
 from decimal import Decimal, ROUND_HALF_UP
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Json
 
 CENTS = Decimal("0.01")
 
@@ -211,6 +213,105 @@ def record_outcome(conn, message_id, result, slug_to_id) -> int:
         (result.shape, message_id),
     )
     return posted
+
+
+# ---------------------------------------------------- derived templates
+
+def load_templates(conn) -> list[dict]:
+    """Templates derived from the review screen, as runtime template dicts.
+
+    Loaded per tick and handed to the parser, so `ledger/` never gains database
+    access and stays testable without one.
+
+    A template whose stored regex no longer compiles is skipped rather than
+    allowed to crash the tick — one bad row must not stop every message.
+    """
+    from ledger.derive import to_runtime_template
+
+    rows = conn.execute(
+        """
+        SELECT id, sender, shape_hash, pattern, field_map, kind
+        FROM sms_templates
+        ORDER BY created_at
+        """
+    ).fetchall()
+
+    out = []
+    for row in rows:
+        meta = row["field_map"] or {}
+        try:
+            out.append(to_runtime_template({
+                "id": str(row["id"])[:8],
+                "sender": row["sender"],
+                "kind": row["kind"],
+                "pattern": row["pattern"],
+                "direction": meta.get("direction", "debit"),
+                "date_format": meta.get("date_format"),
+                "field_order": meta.get("field_order", []),
+                "account_hint": meta.get("account_hint"),
+            }))
+        except re.error:
+            continue
+    return out
+
+
+def save_template(conn, shape_hash: str, template: dict) -> str:
+    """Store a derived template against its shape hash.
+
+    ON CONFLICT updates rather than erroring: deriving a second time for the
+    same shape means the first attempt was wrong, and refusing the correction
+    would leave the wrong one in place.
+    """
+    row = conn.execute(
+        """
+        INSERT INTO sms_templates
+            (sender, shape_hash, language, pattern, field_map, kind, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s, 'manual')
+        ON CONFLICT (shape_hash) DO UPDATE
+            SET pattern = EXCLUDED.pattern,
+                field_map = EXCLUDED.field_map,
+                kind = EXCLUDED.kind,
+                sender = EXCLUDED.sender
+        RETURNING id
+        """,
+        (
+            template["sender"],
+            shape_hash,
+            template.get("language", "ar"),
+            template["pattern"],
+            Json({
+                "field_order": template["field_order"],
+                "direction": template["direction"],
+                "date_format": template.get("date_format"),
+                "account_hint": template.get("account_hint"),
+            }),
+            template["kind"],
+        ),
+    ).fetchone()
+    return str(row["id"])
+
+
+def requeue_shape(conn, shape_hash: str) -> int:
+    """Send every message of this shape back through the parser.
+
+    This is the payoff (§10.7): hand-process one message and the other
+    forty-nine resolve themselves. Includes messages already parked as `failed`
+    — they failed for want of this template.
+
+    Deliberately does NOT touch messages already parsed. Re-parsing them would
+    risk duplicate transactions, and anything that did parse did so against a
+    template that already worked.
+    """
+    result = conn.execute(
+        """
+        UPDATE raw_messages
+        SET status = 'pending', attempts = 0, last_error = NULL, processed_at = NULL
+        WHERE shape_hash = %s
+          AND status IN ('needs_review', 'failed')
+        """,
+        (shape_hash,),
+    )
+    return result.rowcount
 
 
 def recompute_balances(conn) -> int:

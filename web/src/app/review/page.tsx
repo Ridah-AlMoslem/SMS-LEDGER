@@ -12,6 +12,7 @@ import {
 } from "@/lib/review";
 
 import { dismissGroup, restoreGroup, retryGroup } from "./actions";
+import { DeriveForm } from "./derive-form";
 
 export const dynamic = "force-dynamic";
 
@@ -72,7 +73,12 @@ async function load() {
     })
     .from(schema.rawMessages);
 
-  return { parked, dismissed, health: counts as Health };
+  const accounts = await db
+    .select({ slug: schema.accounts.slug, name: schema.accounts.name })
+    .from(schema.accounts)
+    .orderBy(schema.accounts.sortOrder);
+
+  return { parked, dismissed, accounts, health: counts as Health };
 }
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "warn" }) {
@@ -90,7 +96,15 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: "wa
   );
 }
 
-function GroupCard({ group, dismissed }: { group: ShapeGroup; dismissed?: boolean }) {
+function GroupCard({
+  group,
+  accounts,
+  dismissed,
+}: {
+  group: ShapeGroup;
+  accounts: { slug: string; name: string }[];
+  dismissed?: boolean;
+}) {
   const retry = retryGroup.bind(null, group.ids);
   const dismiss = dismissGroup.bind(null, group.ids);
   const restore = restoreGroup.bind(null, group.ids);
@@ -144,6 +158,7 @@ function GroupCard({ group, dismissed }: { group: ShapeGroup; dismissed?: boolea
                   Retry {group.count > 1 ? `all ${group.count}` : ""}
                 </button>
               </form>
+              <DeriveForm messageId={group.sample.id} accounts={accounts} />
               <form action={dismiss}>
                 <button
                   type="submit"
@@ -230,7 +245,7 @@ export default async function ReviewPage() {
             </p>
           </div>
         ) : (
-          groups.map((g) => <GroupCard key={g.key} group={g} />)
+          groups.map((g) => <GroupCard key={g.key} group={g} accounts={data.accounts} />)
         )}
       </div>
 
@@ -245,15 +260,16 @@ export default async function ReviewPage() {
           </p>
           <div className="mt-3 space-y-4">
             {dismissedGroups.map((g) => (
-              <GroupCard key={g.key} group={g} dismissed />
+              <GroupCard key={g.key} group={g} accounts={data.accounts} dismissed />
             ))}
           </div>
         </section>
       )}
 
       <p className="mt-8 text-xs opacity-50">
-        Retry reprocesses the whole group — use it after adding a template, so one fix clears
-        every message sharing that format. Deriving templates from here is not built yet.
+        &ldquo;Teach the parser&rdquo; turns one message into a template and reparses every
+        message sharing its format. Note that a format with different merchant names produces
+        different groups — free text is not generalised in the shape hash.
       </p>
     </main>
   );

@@ -23,10 +23,12 @@ PORT = int(os.environ.get("TEST_PG_PORT", "5435"))
 DSN = f"postgresql://postgres@127.0.0.1:{PORT}/postgres"
 INGEST_SECRET = "test-ingest-secret"
 CRON_SECRET = "test-cron-secret"
+INTERNAL_SECRET = "test-internal-secret"
 
 os.environ["DATABASE_URL"] = DSN
 os.environ["INGEST_SECRET"] = INGEST_SECRET
 os.environ["CRON_SECRET"] = CRON_SECRET
+os.environ["INTERNAL_SECRET"] = INTERNAL_SECRET
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -66,6 +68,11 @@ def main_test():
                                          balance_semantics, reconcilable)
                    VALUES (%s,%s,%s,%s,%s,%s,%s)""",
                 (slug, name, inst, typ, liab, sem, inst != "SAIB"))
+        conn.execute(
+            """INSERT INTO accounts (slug, name, institution, type, opening_balance,
+                                     current_balance, reconcilable)
+               VALUES ('barq','Barq Wallet','barq app','wallet',0,0,true)
+               ON CONFLICT (slug) DO NOTHING""")
         for inst, kind, value, slug in IDENTIFIERS:
             conn.execute(
                 """INSERT INTO account_identifiers (account_id, institution, kind, value)
@@ -117,6 +124,39 @@ def main_test():
     r = client.post("/api/parse-tick", headers={"X-Cron-Secret": CRON_SECRET})
     check("OTP was ignored, not parsed", r.json()["ignored"], 1)
     check("OTP added no transaction", _count("transactions"), 1)
+
+    print("\n[6] DERIVE ENDPOINT IS GUARDED  (§10.7)")
+    body = "سحب نقدي\nالمبلغ 45.50 SAR\nالرصيد 158.51\nالصراف TAMIMI ATM\n2026-08-09 14:22"
+    signed(client, "barq app", body, datetime(2026, 8, 9, 14, 25, tzinfo=UTC))
+    client.post("/api/parse-tick", headers={"X-Cron-Secret": CRON_SECRET})
+
+    with store.connect(DSN) as conn:
+        parked = conn.execute(
+            "SELECT id FROM raw_messages WHERE status='needs_review'").fetchone()
+    check("the message parked", parked is not None, True)
+
+    payload = {"message_id": str(parked["id"]), "kind": "withdrawal", "direction": "debit",
+               "account_hint": "barq", "fields": {"amount": "45.50", "merchant": "TAMIMI ATM"}}
+
+    r = client.post("/api/templates/derive", json=payload)
+    check("unsigned derive rejected", r.status_code, 401)
+    r = client.post("/api/templates/derive", json=payload,
+                    headers={"X-Internal-Secret": "wrong"})
+    check("wrong secret rejected", r.status_code, 401)
+
+    r = client.post("/api/templates/derive",
+                    json={**payload, "fields": {"amount": "999.99"}},
+                    headers={"X-Internal-Secret": INTERNAL_SECRET})
+    check("a value not in the message is refused with 422", r.status_code, 422)
+    check("and says why", "does not appear" in r.json()["detail"], True)
+
+    r = client.post("/api/templates/derive", json=payload,
+                    headers={"X-Internal-Secret": INTERNAL_SECRET})
+    check("a valid derivation is accepted", r.status_code, 200)
+    check("and requeues the message", r.json()["requeued"], 1)
+
+    r = client.post("/api/parse-tick", headers={"X-Cron-Secret": CRON_SECRET})
+    check("the requeued message now parses", r.json()["parsed"], 1)
 
     print()
     if all(checks):

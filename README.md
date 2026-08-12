@@ -126,7 +126,7 @@ first time you redeem points earned before tracking began (§9.2).
 ## Running it
 
 ```bash
-python3 tests/run_all.py          # parser + persistence: 14 suites
+python3 tests/run_all.py          # parser + persistence: 16 suites
 python3 tests/run_all.py --fast   # pure logic only, ~1s, no Node required
 
 cd web
@@ -228,7 +228,7 @@ Full table in `SPEC.md` §12.
 | 4 | Template engine | **Done in-memory** — template CRUD and persistence not built |
 | 5 | Gemini fallback | Deferred past v1 |
 | 6 | Transaction writer | **Mostly done** — claim, parse, post, balances, reconciliation |
-| 7 | Manual workbench | **Queue done** — grouped by shape, retry/dismiss. Template derivation not built |
+| 7 | Manual workbench | **Done** — queue, retry/dismiss, and template derivation |
 
 A signed message goes in one end and comes out as a transaction on the page, account balances
 move, and drift against the bank's own figures raises a visible alert.
@@ -243,11 +243,14 @@ What this does *not* yet do, in rough priority order:
 - **Top-up linking is not applied on the DB path.** `link_topups` is a cross-transaction pass
   and only runs in the in-memory pipeline. Until it is wired, a wallet top-up and the spend it
   funds both count — the simulation measures this as +320 phantom expense over two months.
-- **Templates cannot be derived from the review screen yet.** Retry reprocesses a group, but
-  you still add the template by hand in `registry.py`. This is the piece that makes a new bank
-  cheap — hand-process one message, resolve the other forty-nine.
+- **`shape_hash` does not generalise free text.** Digits become `#`, but merchant names stay
+  verbatim, so one format with forty different merchants produces forty shapes — forty review
+  groups, forty derivations. SPEC §3.2 assumes template count scales with *formats*; as
+  implemented it scales with formats × merchants. This is the single biggest limit on how much
+  work the review screen actually saves.
 - **`template_id` is written as NULL** on every parse, so there is no record of which template
   matched and `hit_count` never climbs.
-- **Templates live in code, not the database.** `sms_templates` is created and empty;
-  `registry.py` is still the source of truth.
+- **Code templates cannot be edited from the UI.** Derived templates live in `sms_templates`
+  and are tried first, so a correction wins — but the 20 built-in ones still change only in
+  `registry.py`.
 - **No transfer pairing, no rules engine, no categories.** Transactions land uncategorized.

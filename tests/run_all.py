@@ -24,10 +24,12 @@ PURE = [
     "verify_periods.py", "verify_dates.py", "verify_classification.py",
     "verify_batch3.py", "verify_accounting.py", "verify_lifecycle.py",
     "verify_pairing.py", "verify_topup.py", "verify_topup_link.py", "verify_stc.py",
+    "verify_derive.py",
     "simulate_two_months.py",
 ]
 
-DB = ["verify_persistence.py", "verify_balances.py", "verify_endpoints.py"]
+DB = ["verify_persistence.py", "verify_balances.py", "verify_template_store.py",
+      "verify_endpoints.py"]
 
 
 def run(script, args=()):

@@ -50,6 +50,69 @@ export async function dismissGroup(ids: string[]) {
   revalidatePath("/");
 }
 
+export type DeriveResult = { ok: true; requeued: number } | { ok: false; error: string };
+
+/**
+ * Derive a template from a marked-up message (SPEC §10.7).
+ *
+ * Forwards to the parser service rather than deriving here. The regex has to
+ * be written against the SAME normalized text the parser matches on, next to
+ * the letterform folding and spacing rules that produced it. A second
+ * implementation in TypeScript would agree right up until the day it didn't.
+ */
+export async function deriveTemplate(
+  _prev: DeriveResult | null,
+  form: FormData,
+): Promise<DeriveResult> {
+  const secret = process.env.INTERNAL_SECRET;
+  const base = process.env.PARSER_URL ?? "";
+  if (!secret) return { ok: false, error: "INTERNAL_SECRET is not set in web/.env.local" };
+
+  const str = (k: string) => (form.get(k) as string | null)?.trim() ?? "";
+
+  // Only send fields that were actually filled in — an empty string would be
+  // read as "this value appears in the message" and fail to locate.
+  const fields: Record<string, string> = {};
+  for (const name of ["amount", "balance", "fee_amount", "merchant", "counterparty",
+                      "card", "from_account", "to_account", "biller", "date_raw"]) {
+    const v = str(name);
+    if (v) fields[name] = v;
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${base}/api/templates/derive`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Internal-Secret": secret },
+      body: JSON.stringify({
+        message_id: str("message_id"),
+        kind: str("kind"),
+        direction: str("direction"),
+        date_format: str("date_format") || null,
+        account_hint: str("account_hint") || null,
+        fields,
+      }),
+    });
+  } catch {
+    return {
+      ok: false,
+      error: `Can't reach the parser service at ${base || "(PARSER_URL unset)"}. Start it, or run both with \`vercel dev\`.`,
+    };
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    // The service returns 422 with a specific reason when it refuses to store
+    // a template it could not verify. That reason is the useful part.
+    return { ok: false, error: body?.detail ?? `${res.status} ${res.statusText}` };
+  }
+
+  const body = await res.json();
+  revalidatePath("/review");
+  revalidatePath("/");
+  return { ok: true, requeued: body.requeued ?? 0 };
+}
+
 /** Undo a dismissal — back into the queue for another look. */
 export async function restoreGroup(ids: string[]) {
   if (ids.length === 0) return;

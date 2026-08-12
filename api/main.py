@@ -23,6 +23,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 import db as store
+from ledger.derive import DeriveError, derive
 from ledger.normalize import shape_hash
 from ledger.pipeline import body_hash, parse_message
 
@@ -31,6 +32,9 @@ app = FastAPI(title="sms-ledger", docs_url=None, redoc_url=None, openapi_url=Non
 
 INGEST_SECRET = os.environ.get("INGEST_SECRET", "")
 CRON_SECRET = os.environ.get("CRON_SECRET", "")
+# Shared with the web service so it can call the derive endpoint. Separate from
+# CRON_SECRET on purpose: different caller, different blast radius.
+INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "")
 MAX_SKEW_SECONDS = 300
 
 # Which account funds a card payment, and which holds cashback. Slugs, not
@@ -103,6 +107,9 @@ async def parse_tick(x_cron_secret: str = Header(default=""), limit: int = 50) -
 
     with store.connect() as conn:
         identifiers, slug_to_id = store.load_account_map(conn)
+        # Templates derived from the review screen, tried ahead of the code
+        # ones so a correction actually takes effect (§10.7).
+        templates = store.load_templates(conn)
         claimed = store.claim_pending(conn, limit)
         conn.commit()
         counts["claimed"] = len(claimed)
@@ -114,6 +121,7 @@ async def parse_tick(x_cron_secret: str = Header(default=""), limit: int = 50) -
                 result = parse_message(
                     msg["sender"], msg["body"], msg["received_at"],
                     identifiers, FUNDING_ACCOUNT, CASHBACK_ACCOUNT,
+                    templates=templates,
                 )
                 counts["legs"] += store.record_outcome(conn, msg["id"], result, slug_to_id)
                 conn.commit()
@@ -134,6 +142,66 @@ async def parse_tick(x_cron_secret: str = Header(default=""), limit: int = 50) -
         counts["alerts"] = len(alerts)
 
     return counts
+
+
+class DerivePayload(BaseModel):
+    """What the review screen sends when you mark up a message."""
+    message_id: str
+    kind: str = Field(min_length=1, max_length=32)
+    direction: str
+    date_format: str | None = None
+    account_hint: str | None = None
+    fields: dict[str, str]
+    apply: bool = True
+
+
+@app.post("/api/templates/derive")
+async def derive_template(
+    payload: DerivePayload,
+    x_internal_secret: str = Header(default=""),
+) -> dict:
+    """Turn one hand-marked message into a stored template (SPEC §10.7).
+
+    Guarded by a shared secret rather than left open: this endpoint writes
+    parsing rules, so anyone who could call it could make future messages parse
+    however they liked.
+
+    Derivation happens here, in Python, next to the normalizer and the regex
+    conventions it has to match. Doing it in the web service would mean a
+    second implementation of the same rules, and the two would drift.
+    """
+    if not INTERNAL_SECRET or not hmac.compare_digest(x_internal_secret, INTERNAL_SECRET):
+        raise HTTPException(401, "unauthorized")
+
+    with store.connect() as conn:
+        msg = conn.execute(
+            "SELECT id, sender, body, shape_hash FROM raw_messages WHERE id = %s",
+            (payload.message_id,),
+        ).fetchone()
+        if msg is None:
+            raise HTTPException(404, "message not found")
+
+        try:
+            template = derive(
+                msg["body"], payload.fields, payload.kind, payload.direction,
+                payload.date_format, msg["sender"], payload.account_hint,
+            )
+        except DeriveError as exc:
+            # A refusal is a 422, not a 500: the input was understood and
+            # rejected, and the message says exactly why.
+            raise HTTPException(422, str(exc))
+
+        shape = msg["shape_hash"] or shape_hash(msg["body"])
+        template_id = store.save_template(conn, shape, template)
+        requeued = store.requeue_shape(conn, shape) if payload.apply else 0
+        conn.commit()
+
+    return {
+        "template_id": template_id,
+        "shape_hash": shape,
+        "pattern": template["pattern"],
+        "requeued": requeued,
+    }
 
 
 @app.get("/api/health")

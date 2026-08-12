@@ -47,7 +47,8 @@ class ParseResult:
 
 
 def parse_message(sender, body, received_at, identifiers,
-                  funding_account=None, cashback_account="cashback_wallet"):
+                  funding_account=None, cashback_account="cashback_wallet",
+                  templates=None):
     """Classify → match → extract → date → resolve → build legs.
 
     Returns a ParseResult and touches nothing else. Every early return is a
@@ -68,7 +69,7 @@ def parse_message(sender, body, received_at, identifiers,
         return ParseResult(status="needs_review", shape=shape, kind=c["kind"],
                            error=f"unhandled class {c['kind']}")
 
-    tp, f = match(sender, body)
+    tp, f = match(sender, body, templates)
     if tp is None:
         return ParseResult(status="needs_review", shape=shape, kind=c["kind"],
                            error="no template matched")

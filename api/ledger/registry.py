@@ -183,9 +183,20 @@ tpl("ST-08", "STC Bank", "purchase", "D/M/YY",
                    date_raw=m[11].strip(), direction="debit"))
 
 
-def match(sender: str, body: str):
+def match(sender: str, body: str, extra=None):
+    """Find the first template for this sender that matches.
+
+    `extra` carries templates derived at runtime and loaded from the database
+    (§10.5, §10.7). They are tried FIRST, deliberately: a hand-derived template
+    is a correction, and a correction that loses to the code template it was
+    written to replace would be silently useless.
+
+    The package itself never touches a database — the caller loads the rows and
+    passes them in, which is what keeps this module pure enough to test without
+    one.
+    """
     t = normalize(body)
-    for tp in T:
+    for tp in list(extra or []) + T:
         if tp["sender"] != sender: continue
         m = tp["rx"].search(t)
         if m:

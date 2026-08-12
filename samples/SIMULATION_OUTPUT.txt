@@ -1,0 +1,81 @@
+==============================================================================
+TWO-MONTH SIMULATION — 25 Jun 2026 to 24 Aug 2026
+==============================================================================
+
+MESSAGES  generated 50  |  duplicate submissions rejected 5
+  parsed         38
+  ignored        8
+  needs_review   4
+
+[1] NOISE CONTAINMENT
+  ignored by reason: {'otp': 5, 'promo': 2, 'notification': 1}
+  PASS  no ignored message produced a transaction
+
+[2] UNKNOWN FORMATS -> MANUAL REVIEW
+  AlRajhiBank   shape=aa8b20b0a7f1d920  no template matched
+      عملية شراء
+  SAIB          shape=f2f7a4626e56fc92  classified but not actionable
+      Dear customer, a purchase of SAR 250.00 was made on your acc
+  AlRajhiBank   shape=ba7334f120b0d17c  no template matched
+      شراء عبر نقاط البيع 
+  Alinma Bank   shape=84a93a233fec318e  unrecognised sender
+      شراء عبر نقاط البيع
+  PASS  all 4 unknown formats parked, zero transactions created from them
+
+[3] LEDGER vs GROUND TRUTH  (cycle = salary cycle, 25th -> 24th)
+  cycle                expense (got/want)          earned (got/want)            passive
+  July 2026           625.78 /     625.78     13935.76 /    13935.76   182.16 /  182.16
+  August 2026        1058.91 /    1058.91     13935.76 /    13935.76   206.87 /  206.87
+  PASS  every cycle total matches the generator exactly
+
+[4] MASTER INVARIANT  d(net worth) == income - expense
+  alrajhi_card             144.80
+  barq                     158.51
+  cashback_wallet          -52.81
+  saib_current           16458.52
+  saib_savings            9866.84
+  --------------------------------
+  d(net worth)          26575.86   income 28260.55 - expense 1684.69 = 26575.86
+  PASS
+
+[5] RECONCILIATION (accounts that report a balance)
+  PASS  alrajhi_card   computed   12144.80  reported   12144.80  (debt = 1855.20)
+  PASS  barq           computed     158.51  reported     158.51
+  SAIB accounts report no balance -> unreconcilable by design (SPEC 3.3b)
+
+[6] WALLET TOP-UP LINKING
+  top-ups linked: 2   funding purchases: 2   all internal: True
+  PASS  expense 1684.69; without linking it would read 2004.69 (+320 phantom)
+
+[7] EARLY PAYDAY
+  paid 2026-06-25  due 06/25  -> cycle July 2026  (raw date alone would say July 2026)
+  paid 2026-07-23  due 07/25  -> cycle August 2026  (raw date alone would say July 2026)
+  PASS  23 Jul payment carries due date 07/25 (a Saturday) — SPEC 5.6 applies
+
+[8] DATA-QUALITY FLAGS RAISED BY THE RUN
+  cashback wallet: accrued 22.19, redeemed 75.00 -> balance -52.81
+  FLAG  wallet is negative — redemption of cashback earned BEFORE tracking began.
+        Correct behaviour under cold start (SPEC 9.2): needs an opening balance,
+        not a parser fix. A real system must surface this rather than hide it.
+
+[9] DASHBOARD VIEW
+
+  July 2026   income   14117.92   expense    625.78   net   13492.14   savings rate  95.6%
+      Zid                             155.22
+      المخالفات المرورية              113.00
+      Muvicinem                        89.99
+      DELIVEROO                        64.33
+      DAWAR ALS                        63.20
+      TAMIMI MARKETS                   42.50
+
+  August 2026   income   14142.63   expense   1058.91   net   13083.72   savings rate  92.5%
+      المخالفات المرورية              300.00
+      Innovativ                       210.75
+      Muvicinem                       150.00
+      LAZEZ                            88.40
+      ANTHROPIC                        88.36
+      DAWAR ALS                        72.30
+
+==============================================================================
+ALL SIMULATION ASSERTIONS PASS
+==============================================================================

@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------
+# Raw personal data — never commit.
+# These are real bank SMS containing account numbers and amounts.
+# They must stay on disk for the verification scripts to run.
+# ---------------------------------------------------------------
+samples/*_raw.txt
+samples/ANALYSIS.md
+samples/TRACE.md
+samples/COLLECTION.md
+sms.txt
+*.private.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
+*.swp

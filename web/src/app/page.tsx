@@ -1,8 +1,8 @@
-import { asc, desc, eq } from "drizzle-orm";
+import { asc, desc, eq, isNull } from "drizzle-orm";
 
 import { AccountsOverview } from "@/components/accounts-overview";
 import { getDb, schema } from "@/db";
-import { type AccountRow, groupByInstitution } from "@/lib/accounts";
+import { type AccountRow, type Alert, groupByInstitution } from "@/lib/accounts";
 
 // Ledger data changes on every parser tick, so never prerender this.
 export const dynamic = "force-dynamic";
@@ -61,7 +61,19 @@ async function load() {
     .orderBy(desc(schema.transactions.postedAt))
     .limit(50);
 
-  return { accounts, transactions };
+  const alerts = (await db
+    .select({
+      accountId: schema.reconciliationAlerts.accountId,
+      computedBalance: schema.reconciliationAlerts.computedBalance,
+      reportedBalance: schema.reconciliationAlerts.reportedBalance,
+      delta: schema.reconciliationAlerts.delta,
+      detectedAt: schema.reconciliationAlerts.detectedAt,
+    })
+    .from(schema.reconciliationAlerts)
+    .where(isNull(schema.reconciliationAlerts.resolvedAt))
+    .orderBy(desc(schema.reconciliationAlerts.detectedAt))) as Alert[];
+
+  return { accounts, transactions, alerts };
 }
 
 function Notice({ title, body }: { title: string; body: string }) {
@@ -105,7 +117,7 @@ export default async function Page() {
             body="Run npm run db:seed to create them."
           />
         ) : (
-          <AccountsOverview groups={groups} />
+          <AccountsOverview groups={groups} alerts={data.alerts} />
         )}
       </div>
 

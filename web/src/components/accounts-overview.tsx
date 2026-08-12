@@ -1,5 +1,6 @@
 import {
   type AccountView,
+  type Alert,
   type Group,
   TYPE_LABELS,
   asOf,
@@ -7,10 +8,17 @@ import {
   totals,
 } from "@/lib/accounts";
 
-function Badge({ children, tone = "muted" }: { children: React.ReactNode; tone?: "muted" | "warn" }) {
+function Badge({
+  children,
+  tone = "muted",
+}: {
+  children: React.ReactNode;
+  tone?: "muted" | "warn" | "danger";
+}) {
   const tones = {
     muted: "bg-black/5 dark:bg-white/10 text-current/70",
     warn: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+    danger: "bg-rose-500/15 text-rose-700 dark:text-rose-400",
   };
   return (
     <span className={`rounded px-1.5 py-0.5 text-[11px] leading-none ${tones[tone]}`}>
@@ -21,7 +29,7 @@ function Badge({ children, tone = "muted" }: { children: React.ReactNode; tone?:
 
 /** Credit cards get their own row: the headline is what you OWE, and the
  *  reported figure is demoted to a subtitle. See §3.3a. */
-function CreditCardRow({ a }: { a: AccountView }) {
+function CreditCardRow({ a, drifted }: { a: AccountView; drifted: boolean }) {
   const pct = a.utilisation === null ? null : Math.round(a.utilisation * 100);
 
   return (
@@ -29,7 +37,7 @@ function CreditCardRow({ a }: { a: AccountView }) {
       <div className="flex items-baseline justify-between gap-4">
         <div className="min-w-0">
           <p className="sms-body truncate font-medium">{a.name}</p>
-          <p className="mt-0.5 text-xs opacity-60">{TYPE_LABELS[a.type] ?? a.type}</p>
+          <AccountMeta a={a} drifted={drifted} />
         </div>
         <div className="shrink-0 text-right">
           <p className="tabular text-base font-semibold text-rose-600 dark:text-rose-400">
@@ -64,8 +72,22 @@ function CreditCardRow({ a }: { a: AccountView }) {
   );
 }
 
-function AccountRowView({ a }: { a: AccountView }) {
-  if (a.type === "credit_card") return <CreditCardRow a={a} />;
+/** Shared subtitle. §3.3b is emphatic that "unverifiable" must never look like
+ *  "verified", so the absence of reconciliation is stated rather than implied
+ *  by the absence of a badge. */
+function AccountMeta({ a, drifted }: { a: AccountView; drifted: boolean }) {
+  return (
+    <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs opacity-60">
+      <span>{TYPE_LABELS[a.type] ?? a.type}</span>
+      {a.isProfitBearing && <Badge>profit-bearing</Badge>}
+      {!a.reconcilable && <Badge tone="warn">no balance in SMS</Badge>}
+      {drifted && <Badge tone="danger">doesn&rsquo;t match bank</Badge>}
+    </p>
+  );
+}
+
+function AccountRowView({ a, drifted }: { a: AccountView; drifted: boolean }) {
+  if (a.type === "credit_card") return <CreditCardRow a={a} drifted={drifted} />;
 
   const zero = a.net === 0;
 
@@ -73,12 +95,7 @@ function AccountRowView({ a }: { a: AccountView }) {
     <div className="flex items-baseline justify-between gap-4 py-3">
       <div className="min-w-0">
         <p className="sms-body truncate font-medium">{a.name}</p>
-        <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs opacity-60">
-          <span>{TYPE_LABELS[a.type] ?? a.type}</span>
-          {a.isProfitBearing && <Badge>profit-bearing</Badge>}
-          {/* §3.3b — "unverifiable" must never look like "verified". */}
-          {!a.reconcilable && <Badge tone="warn">no balance in SMS</Badge>}
-        </p>
+        <AccountMeta a={a} drifted={drifted} />
       </div>
 
       <p className={`tabular shrink-0 text-base ${zero ? "opacity-40" : "font-medium"}`}>
@@ -88,7 +105,7 @@ function AccountRowView({ a }: { a: AccountView }) {
   );
 }
 
-function GroupCard({ group }: { group: Group }) {
+function GroupCard({ group, drifted }: { group: Group; drifted: Set<string> }) {
   const negative = group.net < 0;
 
   return (
@@ -107,15 +124,17 @@ function GroupCard({ group }: { group: Group }) {
 
       <div className="divide-y divide-black/5 px-4 dark:divide-white/5">
         {group.accounts.map((a) => (
-          <AccountRowView key={a.id} a={a} />
+          <AccountRowView key={a.id} a={a} drifted={drifted.has(a.id)} />
         ))}
       </div>
     </section>
   );
 }
 
-export function AccountsOverview({ groups }: { groups: Group[] }) {
+export function AccountsOverview({ groups, alerts }: { groups: Group[]; alerts: Alert[] }) {
   const { assets, debt, netWorth } = totals(groups);
+  const drifted = new Set(alerts.map((a) => a.accountId));
+  const byId = new Map(groups.flatMap((g) => g.accounts).map((a) => [a.id, a]));
 
   const stale = groups
     .flatMap((g) => g.accounts)
@@ -147,8 +166,40 @@ export function AccountsOverview({ groups }: { groups: Group[] }) {
         )}
       </section>
 
+      {/* §3.3 — drift means a message was missed, double-counted or misparsed.
+          Surfacing it is the whole point; a dashboard that hides this is
+          decorative. */}
+      {alerts.length > 0 && (
+        <section className="rounded-xl border border-rose-500/40 bg-rose-500/5 p-4">
+          <p className="text-sm font-medium text-rose-700 dark:text-rose-400">
+            {alerts.length === 1
+              ? "One account doesn't match the bank"
+              : `${alerts.length} accounts don't match the bank`}
+          </p>
+          <ul className="mt-2 space-y-1 text-sm">
+            {alerts.map((al) => {
+              const acct = byId.get(al.accountId);
+              const off = Number(al.delta);
+              return (
+                <li key={al.accountId} className="opacity-80">
+                  <span className="font-medium">{acct?.name ?? "Unknown account"}</span>{" "}
+                  — we calculate <span className="tabular">{money(Number(al.computedBalance))}</span>,
+                  the bank reports <span className="tabular">{money(Number(al.reportedBalance))}</span>{" "}
+                  ({off > 0 ? "over" : "under"} by{" "}
+                  <span className="tabular">{money(off)}</span>)
+                </li>
+              );
+            })}
+          </ul>
+          <p className="mt-2 text-xs opacity-60">
+            Usually a message that never arrived. It clears itself once the missing one is
+            parsed.
+          </p>
+        </section>
+      )}
+
       {groups.map((g) => (
-        <GroupCard key={g.institution} group={g} />
+        <GroupCard key={g.institution} group={g} drifted={drifted} />
       ))}
     </div>
   );

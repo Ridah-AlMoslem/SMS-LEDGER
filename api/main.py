@@ -98,7 +98,8 @@ async def parse_tick(x_cron_secret: str = Header(default=""), limit: int = 50) -
     if not CRON_SECRET or not hmac.compare_digest(x_cron_secret, CRON_SECRET):
         raise HTTPException(401, "unauthorized")
 
-    counts = {"claimed": 0, "parsed": 0, "ignored": 0, "review": 0, "failed": 0, "legs": 0}
+    counts = {"claimed": 0, "parsed": 0, "ignored": 0, "review": 0, "failed": 0,
+              "legs": 0, "alerts": 0}
 
     with store.connect() as conn:
         identifiers, slug_to_id = store.load_account_map(conn)
@@ -123,6 +124,14 @@ async def parse_tick(x_cron_secret: str = Header(default=""), limit: int = 50) -
                 store.record_failure(conn, msg["id"], f"{type(exc).__name__}: {exc}")
                 conn.commit()
                 counts["failed"] += 1
+
+        # Balances are derived, so this runs every tick regardless of whether
+        # anything parsed — a manual edit or a deleted transaction changes them
+        # too, and recomputing costs one aggregate.
+        store.recompute_balances(conn)
+        alerts = store.reconcile(conn)
+        conn.commit()
+        counts["alerts"] = len(alerts)
 
     return counts
 

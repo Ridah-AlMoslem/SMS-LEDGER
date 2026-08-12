@@ -27,7 +27,7 @@ PURE = [
     "simulate_two_months.py",
 ]
 
-DB = ["verify_persistence.py", "verify_endpoints.py"]
+DB = ["verify_persistence.py", "verify_balances.py", "verify_endpoints.py"]
 
 
 def run(script, args=()):

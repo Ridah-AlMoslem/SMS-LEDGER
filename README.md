@@ -221,17 +221,24 @@ Full table in `SPEC.md` §12.
 | 3 | Normalization + classification | **Done** |
 | 4 | Template engine | **Done in-memory** — template CRUD and persistence not built |
 | 5 | Gemini fallback | Deferred past v1 |
-| 6 | Transaction writer | **Thin slice done** — claim, parse, post, mark. See gaps below |
+| 6 | Transaction writer | **Mostly done** — claim, parse, post, balances, reconciliation |
 | 7 | Manual workbench | Not started |
 
-A signed message now goes in one end and comes out as a transaction row on the page. What that
-slice does *not* yet do, in rough priority order:
+A signed message goes in one end and comes out as a transaction on the page, account balances
+move, and drift against the bank's own figures raises a visible alert.
+
+Balances are **recomputed** from `opening_balance` + posted legs on every tick, never
+incremented. Incrementing is cheaper and wrong: messages arrive out of order, replay is a design
+requirement (§3.1), and a tick that committed a transaction but not its balance update would
+leave a permanent invisible skew.
+
+What this does *not* yet do, in rough priority order:
 
 - **Top-up linking is not applied on the DB path.** `link_topups` is a cross-transaction pass
   and only runs in the in-memory pipeline. Until it is wired, a wallet top-up and the spend it
   funds both count — the simulation measures this as +320 phantom expense over two months.
-- **Reconciliation is not wired.** Snapshots are written, but nothing compares computed against
-  reported balances yet, so drift is currently invisible.
+- **`template_id` is written as NULL** on every parse, so there is no record of which template
+  matched and `hit_count` never climbs.
 - **Templates live in code, not the database.** `sms_templates` is created and empty;
   `registry.py` is still the source of truth.
 - **No transfer pairing, no rules engine, no categories.** Transactions land uncategorized.

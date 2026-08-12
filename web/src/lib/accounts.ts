@@ -22,6 +22,14 @@ export type AccountRow = {
   sortOrder: number;
 };
 
+export type Alert = {
+  accountId: string;
+  computedBalance: string;
+  reportedBalance: string;
+  delta: string;
+  detectedAt: Date;
+};
+
 export type AccountView = AccountRow & {
   /** Signed contribution to net worth. Negative for anything owed. */
   net: number;

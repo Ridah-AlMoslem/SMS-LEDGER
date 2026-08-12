@@ -213,6 +213,132 @@ def record_outcome(conn, message_id, result, slug_to_id) -> int:
     return posted
 
 
+def recompute_balances(conn) -> int:
+    """Derive every account balance from opening_balance + its posted legs.
+
+    Recomputed, never incremented. An incremental `balance += amount` looks
+    cheaper and is wrong here for three separate reasons:
+
+      - Messages arrive out of order. iOS automations retry, and a manual
+        backfill can insert a transaction dated last month.
+      - Replay is a design requirement (§3.1). Re-parsing history against an
+        improved parser would apply every delta a second time.
+      - A failed tick that committed a transaction but not its balance update
+        would leave a permanent, invisible skew.
+
+    Recomputing is idempotent, so none of those can drift. It costs one
+    aggregate over a table that holds thousands of rows, not millions.
+
+    The sign rule is uniform: credit adds, debit subtracts — for assets AND for
+    credit cards. On a card the stored figure is available credit, and a
+    purchase (debit) genuinely does reduce it while a payment (credit) raises
+    it. What differs is only the INTERPRETATION: net worth reads a card as
+    −(limit − balance). Getting that distinction backwards is §3.3a.
+    """
+    result = conn.execute(
+        """
+        UPDATE accounts a
+        SET current_balance = a.opening_balance + COALESCE(t.delta, 0),
+            balance_as_of   = COALESCE(t.last_at, a.balance_as_of)
+        FROM (
+            SELECT acc.id,
+                   SUM(CASE WHEN tx.direction = 'credit' THEN tx.amount
+                            ELSE -tx.amount END) AS delta,
+                   MAX(tx.posted_at) AS last_at
+            FROM accounts acc
+            LEFT JOIN transactions tx
+                   ON tx.account_id = acc.id
+                  AND tx.state = 'posted'
+            GROUP BY acc.id
+        ) t
+        WHERE a.id = t.id
+        """
+    )
+    return result.rowcount
+
+
+def reconcile(conn) -> list[dict]:
+    """Compare computed balances against what the bank actually printed (§3.3).
+
+    Drift means a message was missed, double-counted, or misparsed. This is the
+    check that makes the ledger trustworthy rather than decorative — without
+    it, silent data loss is invisible, and on a pipeline that depends on an iOS
+    automation staying enabled, silent data loss is a matter of time.
+
+    Only accounts flagged `reconcilable` are checked. SAIB reports no balance
+    in any message, so comparing it against nothing would either raise a
+    permanent false alarm or, worse, report a clean reconciliation it has not
+    earned (§3.3b).
+
+    For a credit card the reported رصيد IS available credit, which is exactly
+    what `current_balance` holds — so the comparison is direct, with no
+    limit arithmetic in between.
+    """
+    drifted = conn.execute(
+        """
+        WITH latest AS (
+            SELECT DISTINCT ON (account_id) account_id, balance, as_of
+            FROM balance_snapshots
+            WHERE source = 'sms'
+            ORDER BY account_id, as_of DESC, id
+        )
+        SELECT a.id, a.slug, a.current_balance AS computed,
+               l.balance AS reported,
+               a.current_balance - l.balance AS delta
+        FROM accounts a
+        JOIN latest l ON l.account_id = a.id
+        WHERE a.reconcilable
+          AND a.is_active
+          AND abs(a.current_balance - l.balance) > 0.01
+        """
+    ).fetchall()
+
+    raised = []
+    for row in drifted:
+        # One open alert per account. Re-raising the same drift every minute
+        # would bury the signal under its own noise.
+        existing = conn.execute(
+            """
+            SELECT id FROM reconciliation_alerts
+            WHERE account_id = %s AND resolved_at IS NULL
+              AND abs(delta - %s) <= 0.01
+            """,
+            (row["id"], row["delta"]),
+        ).fetchone()
+        if existing:
+            continue
+
+        conn.execute(
+            """
+            INSERT INTO reconciliation_alerts
+                (account_id, computed_balance, reported_balance, delta)
+            VALUES (%s, %s, %s, %s)
+            """,
+            (row["id"], row["computed"], row["reported"], row["delta"]),
+        )
+        raised.append(dict(row))
+
+    # A drift that has since been explained away by later messages should stop
+    # shouting. Anything no longer drifting gets closed.
+    conn.execute(
+        """
+        UPDATE reconciliation_alerts ra
+        SET resolved_at = now(),
+            resolution_note = 'balance agrees after later messages'
+        FROM accounts a,
+             LATERAL (
+                 SELECT balance FROM balance_snapshots
+                 WHERE account_id = a.id AND source = 'sms'
+                 ORDER BY as_of DESC, id LIMIT 1
+             ) l
+        WHERE ra.account_id = a.id
+          AND ra.resolved_at IS NULL
+          AND abs(a.current_balance - l.balance) <= 0.01
+        """
+    )
+    return raised
+
+
 def record_failure(conn, message_id, error: str) -> None:
     """A message that raised. Parks after MAX_ATTEMPTS so one poison message
     cannot occupy every tick forever."""

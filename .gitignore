@@ -46,3 +46,5 @@ next-env.d.ts
 
 # Real opening balances = your net worth. Template lives in seed.sql.
 web/scripts/seed.local.sql
+.vercel
+.env*

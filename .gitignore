@@ -43,3 +43,6 @@ next-env.d.ts
 .vscode/
 .idea/
 *.swp
+
+# Real opening balances = your net worth. Template lives in seed.sql.
+web/scripts/seed.local.sql

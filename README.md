@@ -259,9 +259,6 @@ leave a permanent invisible skew.
 
 What this does *not* yet do, in rough priority order:
 
-- **Top-up linking is not applied on the DB path.** `link_topups` is a cross-transaction pass
-  and only runs in the in-memory pipeline. Until it is wired, a wallet top-up and the spend it
-  funds both count — the simulation measures this as +320 phantom expense over two months.
 - **Top-up linking does not run on the DB path.** `link_topups` is a cross-transaction pass
   that exists only in the in-memory pipeline, so a wallet top-up and the spend it funds both
   count. The simulation measures this at +320 phantom expense over two months.

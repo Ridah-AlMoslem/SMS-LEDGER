@@ -1,8 +1,8 @@
 """Batch-3 raw samples: OTPs must never touch the ledger; SADAD must extract."""
 import sys, os, re
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "parser"))
-from classify import classify
-from extract import extract_bill_payment
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+from ledger.classify import classify
+from ledger.extract import extract_bill_payment
 
 RAW = open(os.path.join(os.path.dirname(__file__), "..", "samples", "batch3_raw.txt"),
            encoding="utf-8").read()

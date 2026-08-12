@@ -1,7 +1,7 @@
 """Field extraction. Only templates attested in RAW text are implemented;
 screenshot-derived shapes are deliberately absent (see ANALYSIS.md B2.1)."""
 import re
-from normalize import normalize, parse_amount, last_digits
+from .normalize import normalize, parse_amount, last_digits
 
 # Amount label priority: the grand total always wins over the subtotal (SPEC §7.6).
 TOTAL = r"(?:اجمالي|اجمالى)\s*(?:المبلغ\s*)?(?:المستحق)?"

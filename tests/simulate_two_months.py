@@ -2,9 +2,9 @@
 import sys, os
 from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "parser")); sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "..", "api")); sys.path.insert(0, HERE)
 from run_scenario import build, ACCOUNTS, CARD_LIMIT
-from periods import period_label
+from ledger.periods import period_label
 cycle_of = period_label
 S, p, dupes = build()
 

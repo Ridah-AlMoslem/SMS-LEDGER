@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  /* System stack. The Arabic faces are listed explicitly so Arabic merchant
+     names and message bodies render in the platform's proper Arabic font
+     rather than a fallback with mismatched metrics. */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Geeza Pro",
+    "Segoe UI Arabic", "Noto Sans Arabic", "Helvetica Neue", Arial, sans-serif;
+
+  /* Amounts and account numbers go in mono, and must stay column-aligned. */
+  --font-mono:
+    ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas,
+    monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+/* Money and account digits: fixed-width, and never rendered as Arabic-Indic
+   numerals even inside an RTL run. The parser normalizes ٠١٢٣ to ASCII on the
+   way in; this keeps the display consistent on the way out. */
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Raw SMS bodies are mixed AR/EN. Isolate them so a right-to-left run cannot
+   reorder the surrounding UI chrome. */
+.sms-body {
+  unicode-bidi: isolate;
+  white-space: pre-wrap;
+}

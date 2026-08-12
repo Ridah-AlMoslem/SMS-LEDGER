@@ -1,7 +1,7 @@
 import sys, os
 from datetime import datetime, timedelta
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "parser"))
-from topup import link_topups, expense_total
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+from ledger.topup import link_topups, expense_total
 
 T0 = datetime(2026, 8, 7, 21, 7)
 OWNED_CARDS = {"0256"}

@@ -6,12 +6,12 @@ move on both sides and `d(net worth) == income - expense` still holds.
 """
 import hashlib
 from datetime import datetime, timedelta
-from normalize import normalize, shape_hash
-from classify import classify
-from registry import match
-from dates import parse as parse_date, DateError
-from periods import period_start, period_label
-from topup import link_topups
+from .normalize import normalize, shape_hash
+from .classify import classify
+from .registry import match
+from .dates import parse as parse_date, DateError
+from .periods import period_start, period_label
+from .topup import link_topups
 
 LEDGER_KINDS = {"purchase","transfer","transfer_in","salary","profit","card_payment",
                 "bill_payment","wallet_topup","cashback_accrual","cashback_redeem","withdrawal"}

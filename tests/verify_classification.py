@@ -1,7 +1,7 @@
 """Classification must keep non-transactions out of the ledger (SPEC §7.1)."""
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "parser"))
-from classify import classify
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "api"))
+from ledger.classify import classify
 
 CASES = [
  # --- the trap: OTPs that look exactly like payments ---

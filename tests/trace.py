@@ -1,10 +1,10 @@
 """Emits a chronological, human-auditable trace of every message processed."""
 import sys, os
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "parser")); sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "..", "api")); sys.path.insert(0, HERE)
 from run_scenario import build, ACCOUNTS, OPENING, CARD_LIMIT
-from classify import classify
-from registry import match
+from ledger.classify import classify
+from ledger.registry import match
 
 S, p, dupes = build()
 legs_by_raw = {}
@@ -66,7 +66,7 @@ for r in p.raw:
             steps.append(f"**reconcile** → bank says {rep:,.2f}, we computed {bal[acct]:,.2f} — {ok}")
         if legs and legs[0]["kind"] == "salary":
             steps.append(f"**cycle** → due `{legs[0]['due_raw']}` → **{legs[0]['cycle']}** "
-                         f"(raw date alone would say {__import__('periods').period_label(legs[0]['ts'])})")
+                         f"(raw date alone would say {__import__('ledger.periods', fromlist=['periods']).period_label(legs[0]['ts'])})")
     for s_ in steps: w(f"- {s_}")
     w("")
 

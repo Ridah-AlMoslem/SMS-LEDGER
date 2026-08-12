@@ -5,7 +5,7 @@ timestamp, so any amount-first parser books it and double-counts every authorise
 payment. Non-ledger classes are therefore matched first and short-circuit.
 """
 import re
-from normalize import normalize
+from .normalize import normalize
 
 # (label, ledger_effect, patterns, whole_body) -- in order, first match wins.
 # whole_body=True means the pattern must describe the ENTIRE message, not a line.

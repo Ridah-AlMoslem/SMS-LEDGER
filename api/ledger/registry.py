@@ -11,7 +11,7 @@ A ledger-class message matching no template goes to needs_review; it is never
 extracted from guessed positions (SPEC §10.7).
 """
 import re
-from normalize import normalize, parse_amount, last_digits
+from .normalize import normalize, parse_amount, last_digits
 
 T = []
 def tpl(tid, sender, kind, date_format, pattern, mapper, account_hint=None):

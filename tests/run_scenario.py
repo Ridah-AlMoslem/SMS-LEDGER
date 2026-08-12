@@ -5,8 +5,8 @@ Imported by simulate_two_months.py (assertions) and trace.py (human-readable flo
 import sys, os
 from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "parser")); sys.path.insert(0, HERE)
-from pipeline import Pipeline
+sys.path.insert(0, os.path.join(HERE, "..", "api")); sys.path.insert(0, HERE)
+from ledger.pipeline import Pipeline
 from scenario import Scenario, CARD_LIMIT
 
 D = lambda m, d, h, mi: datetime(2026, m, d, h, mi)

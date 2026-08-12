@@ -1,6 +1,8 @@
-import { desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 
+import { AccountsOverview } from "@/components/accounts-overview";
 import { getDb, schema } from "@/db";
+import { type AccountRow, groupByInstitution } from "@/lib/accounts";
 
 // Ledger data changes on every parser tick, so never prerender this.
 export const dynamic = "force-dynamic";
@@ -19,9 +21,30 @@ const WHEN = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Asia/Riyadh",
 });
 
-async function getTransactions() {
+async function load() {
   const db = getDb();
-  return db
+
+  const accounts = (await db
+    .select({
+      id: schema.accounts.id,
+      slug: schema.accounts.slug,
+      name: schema.accounts.name,
+      institution: schema.accounts.institution,
+      type: schema.accounts.type,
+      isLiability: schema.accounts.isLiability,
+      balanceSemantics: schema.accounts.balanceSemantics,
+      reconcilable: schema.accounts.reconcilable,
+      currentBalance: schema.accounts.currentBalance,
+      creditLimit: schema.accounts.creditLimit,
+      isProfitBearing: schema.accounts.isProfitBearing,
+      balanceAsOf: schema.accounts.balanceAsOf,
+      sortOrder: schema.accounts.sortOrder,
+    })
+    .from(schema.accounts)
+    .where(eq(schema.accounts.isActive, true))
+    .orderBy(asc(schema.accounts.sortOrder))) as AccountRow[];
+
+  const transactions = await db
     .select({
       id: schema.transactions.id,
       postedAt: schema.transactions.postedAt,
@@ -36,12 +59,14 @@ async function getTransactions() {
     .from(schema.transactions)
     .innerJoin(schema.accounts, eq(schema.accounts.id, schema.transactions.accountId))
     .orderBy(desc(schema.transactions.postedAt))
-    .limit(100);
+    .limit(50);
+
+  return { accounts, transactions };
 }
 
-function Empty({ title, body }: { title: string; body: string }) {
+function Notice({ title, body }: { title: string; body: string }) {
   return (
-    <div className="rounded-lg border border-black/10 dark:border-white/15 p-8 text-center">
+    <div className="rounded-xl border border-black/10 p-8 text-center dark:border-white/15">
       <p className="font-medium">{title}</p>
       <p className="mt-2 text-sm opacity-70">{body}</p>
     </div>
@@ -49,16 +74,16 @@ function Empty({ title, body }: { title: string; body: string }) {
 }
 
 export default async function Page() {
-  let rows: Awaited<ReturnType<typeof getTransactions>>;
+  let data: Awaited<ReturnType<typeof load>>;
 
   try {
-    rows = await getTransactions();
+    data = await load();
   } catch (err) {
     return (
-      <main className="mx-auto w-full max-w-3xl p-6">
+      <main className="mx-auto w-full max-w-2xl p-6">
         <h1 className="text-xl font-semibold">Ledger</h1>
         <div className="mt-6">
-          <Empty
+          <Notice
             title="Can't reach the database"
             body={err instanceof Error ? err.message : String(err)}
           />
@@ -67,58 +92,77 @@ export default async function Page() {
     );
   }
 
+  const groups = groupByInstitution(data.accounts);
+
   return (
-    <main className="mx-auto w-full max-w-3xl p-6">
-      <header className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">Ledger</h1>
-        <span className="text-sm opacity-60">
-          {rows.length} {rows.length === 1 ? "transaction" : "transactions"}
-        </span>
-      </header>
+    <main className="mx-auto w-full max-w-2xl p-6 pb-16">
+      <h1 className="text-xl font-semibold">Ledger</h1>
 
       <div className="mt-6">
-        {rows.length === 0 ? (
-          <Empty
-            title="No transactions yet"
-            body="Send a signed message to /api/ingest, then run the parse tick."
+        {groups.length === 0 ? (
+          <Notice
+            title="No accounts yet"
+            body="Run npm run db:seed to create them."
           />
         ) : (
-          <ul className="divide-y divide-black/10 dark:divide-white/10">
-            {rows.map((t) => {
-              const credit = t.direction === "credit";
-              // A description can be an Arabic biller name or a Latin merchant
-              // string; .sms-body isolates the bidi run so a right-to-left name
-              // cannot reorder the row around it.
-              const label = t.merchant ?? t.biller ?? t.type;
-
-              return (
-                <li key={t.id} className="flex items-center gap-4 py-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="sms-body truncate font-medium">{label}</p>
-                    <p className="mt-0.5 text-xs opacity-60">
-                      {WHEN.format(t.postedAt)} · {t.accountName}
-                      {t.isInternal ? " · internal" : ""}
-                    </p>
-                  </div>
-
-                  <div
-                    className={`tabular shrink-0 text-sm ${
-                      credit ? "text-emerald-600 dark:text-emerald-400" : ""
-                    }`}
-                  >
-                    {credit ? "+" : "−"}
-                    {SAR.format(Number(t.amount))}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          <AccountsOverview groups={groups} />
         )}
       </div>
 
+      <section className="mt-10">
+        <header className="flex items-baseline justify-between">
+          <h2 className="text-sm font-semibold tracking-wide uppercase opacity-70">
+            Recent transactions
+          </h2>
+          {data.transactions.length > 0 && (
+            <span className="text-xs opacity-50">{data.transactions.length} shown</span>
+          )}
+        </header>
+
+        <div className="mt-3">
+          {data.transactions.length === 0 ? (
+            <Notice
+              title="No transactions yet"
+              body="Send a signed message to /api/ingest, then run the parse tick."
+            />
+          ) : (
+            <ul className="divide-y divide-black/10 dark:divide-white/10">
+              {data.transactions.map((t) => {
+                const credit = t.direction === "credit";
+                // A label can be an Arabic biller name or a Latin merchant
+                // string; .sms-body isolates the bidi run so a right-to-left
+                // name cannot reorder the row around it.
+                const label = t.merchant ?? t.biller ?? t.type;
+
+                return (
+                  <li key={t.id} className="flex items-center gap-4 py-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="sms-body truncate font-medium">{label}</p>
+                      <p className="mt-0.5 text-xs opacity-60">
+                        {WHEN.format(t.postedAt)} · {t.accountName}
+                        {t.isInternal ? " · internal" : ""}
+                      </p>
+                    </div>
+                    <div
+                      className={`tabular shrink-0 text-sm ${
+                        credit ? "text-emerald-600 dark:text-emerald-400" : ""
+                      }`}
+                    >
+                      {credit ? "+" : "−"}
+                      {SAR.format(Number(t.amount))}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </section>
+
       <p className="mt-8 text-xs opacity-50">
-        Internal transfers are shown but excluded from spending totals — moving your own money
-        is not an expense.
+        Internal transfers are shown but excluded from spending totals — moving your own money is
+        not an expense. A credit card contributes its debt (limit − available) to net worth, not
+        its reported balance.
       </p>
     </main>
   );

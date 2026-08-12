@@ -1,0 +1,36 @@
+# What never gets uploaded to Vercel.
+#
+# This exists because `vercel deploy` uploads the working directory, not the
+# git tree. Everything in .gitignore is still sitting on disk — including
+# samples/*_raw.txt, which are real bank SMS with real account numbers, and
+# api/.env, which holds the ingest secret. Keeping them out of git is not the
+# same as keeping them off a build server, and only this file does the second.
+#
+# The service config cannot do this job: `root: "api/"` scopes the BUILD, and
+# `excludeFiles` is not a valid key in the `services` model at all. Exclusion
+# from the upload happens here or nowhere.
+
+# Real personal data
+samples/
+sms.txt
+*.private.txt
+
+# Secrets. Vercel takes environment variables from project settings; a .env
+# file reaching the build is only ever a leak.
+.env
+.env.*
+!.env.example
+
+# Not part of either service's build
+tests/
+tools/
+*.md
+!README.md
+
+# Local build and dependency output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+node_modules/
+.next/

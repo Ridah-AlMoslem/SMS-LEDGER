@@ -10,8 +10,7 @@
     },
     "api": {
       "root": "api/",
-      "entrypoint": "main:app",
-      "excludeFiles": "{tests/**,samples/**,**/test_*.py,**/*.test.py}"
+      "entrypoint": "main:app"
     }
   },
   "rewrites": [

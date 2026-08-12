@@ -143,6 +143,12 @@ The Python service installs from `api/requirements.txt`. Keep it in step with
 `pyproject.toml`; a dependency added to only one of them works locally and
 fails in the build.
 
+`.vercelignore` is load-bearing and easy to mistake for a duplicate of
+`.gitignore`. `vercel deploy` uploads the **working directory**, not the git
+tree, so `samples/*_raw.txt` — real bank SMS, with real account numbers — and
+`api/.env` are both still on disk and would otherwise go up. Being untracked
+keeps them out of GitHub and does nothing about a build server.
+
 ### Prove the server before you touch the phone
 
 Paste one real message into a scratch file (it is gitignored) and send it:

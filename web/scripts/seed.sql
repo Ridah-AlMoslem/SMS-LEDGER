@@ -80,6 +80,12 @@ SELECT id, 'SAIB', 'account', '7002' FROM accounts WHERE slug = 'saib_savings'
 UNION ALL
 SELECT id, 'AlRajhiBank', 'card', '0256' FROM accounts WHERE slug = 'alrajhi_card'
 UNION ALL
+-- The AlRajhi CURRENT account. Only one format ever names it — the incoming
+-- transfer `لـ0824` — every other AlRajhi message names the card instead.
+-- Taken from the message text, not the description alongside it, which said
+-- 0842.
+SELECT id, 'AlRajhiBank', 'account', '0824' FROM accounts WHERE slug = 'alrajhi_current'
+UNION ALL
 -- Barq names the funding card, not the wallet, so this maps to the card.
 SELECT id, 'barq app', 'card', '0256' FROM accounts WHERE slug = 'alrajhi_card'
 UNION ALL
@@ -118,9 +124,7 @@ ON CONFLICT (institution, kind, value) DO NOTHING;
 -- collision space is a thousand rather than ten thousand. A wrong identifier
 -- is worse than a missing one: missing parks the message in review (§8.3),
 -- wrong posts it silently against the wrong account.
---
--- Likewise the AlRajhi current account: no message in the samples names it,
--- so its masked digits are unknown.
+
 --
 -- TWO OPEN QUESTIONS, both worth money:
 --

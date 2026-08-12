@@ -22,6 +22,17 @@ A  = r"([\d][\d,]*(?:\.\d+)?)"     # amount
 DT = r"(.+?)"                       # date blob (last line)
 
 # ------------------------------- AlRajhi -------------------------------
+# Incoming transfer to the CURRENT account, not the card. This is the only
+# AlRajhi format that names `0824` — every other one names the card `0256` —
+# so it is what makes the current account reachable at all.
+tpl("AR-01", "AlRajhiBank", "transfer", "YY/M/D",
+    rf"^حوالة داخلية واردة بSAR\s*{A}\nل(\S+)\nمن(\S+?);(.+)\n{DT}$",
+    lambda m: dict(amount=parse_amount(m[1]), to_account=last_digits(m[2]),
+                   from_account=last_digits(m[3]),
+                   counterparty_account=last_digits(m[3]),
+                   counterparty=m[4].strip(), date_raw=m[5].strip(),
+                   direction="credit"))
+
 tpl("AR-02", "AlRajhiBank", "purchase", "D/M/YY",
     rf"^شراء عبر نقاط البيع\nبطاقة:\s*(\S+)\s*;(.+)\nلدي:\s*(.+)\nمبلغ:\s*{A}\s*SAR\n"
     rf"رصيد:\s*{A}\s*SAR\n{DT}$",

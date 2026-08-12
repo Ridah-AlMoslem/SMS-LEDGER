@@ -16,7 +16,7 @@ Full design: [`SPEC.md`](SPEC.md). Simulation results and the six bugs it caught
 | Layer | Choice | Why |
 |---|---|---|
 | Frontend | **Next.js 16** (App Router) | One deploy, API routes are the backend, no CORS |
-| Parser service | **Python 3.12 + FastAPI** | The parser is already written and verified in Python. Porting it to TypeScript would mean re-deriving Arabic normalization and 20 regexes with no test net during the translation |
+| Parser service | **Python 3.12 + FastAPI** | The parser is already written and verified in Python. Porting it to TypeScript would mean re-deriving Arabic normalization and 26 regexes with no test net during the translation |
 | Deploy | **Vercel Services** | Both services in one project, one repo, one deploy. Routing in `vercel.json` |
 | Database | **Supabase Postgres** | 500 MB free tier; a decade of SMS is well under 100 MB |
 | ORM | **Drizzle** | Owns the schema and migrations. Python uses plain SQL against the same tables, so there is one source of truth |
@@ -26,7 +26,7 @@ Full design: [`SPEC.md`](SPEC.md). Simulation results and the six bugs it caught
 | Client data | **TanStack Query** | Cache + optimistic edits for the CRUD layer |
 | Auth | **Supabase Auth** (magic link), RLS on | Single user, but RLS from day one costs nothing |
 
-**LLM fallback is deferred past v1.** The 20 templates cover every attested format. Unknown
+**LLM fallback is deferred past v1.** The 26 templates cover every attested format. Unknown
 shapes park in the review queue, where hand-parsing one message derives a template and
 reprocesses every message sharing its shape hash — which is what the LLM would do, minus an
 API key, a quota ceiling, and a schema contract to keep honest. Gemini 2.5 Flash-Lite goes in
@@ -53,7 +53,7 @@ api/                 Python service — deployed at /api/*
     normalize.py     Bidi stripping, Arabic-Indic digits, letterform folding,
                      currency tokens, shape hashing
     classify.py      Non-ledger classes short-circuit first
-    registry.py      20 templates, regexes derived only from attested raw text
+    registry.py      26 templates, regexes derived only from attested raw text
     extract.py       Field extraction per template
     dates.py         Per-template date formats + received_at validation
     periods.py       Salary-cycle arithmetic (25th → 24th)
@@ -129,7 +129,7 @@ first time you redeem points earned before tracking began (§9.2).
 ## Running it
 
 ```bash
-python3 tests/run_all.py          # parser + persistence: 17 suites
+python3 tests/run_all.py          # parser + persistence: 18 suites
 python3 tests/run_all.py --fast   # pure logic only, ~1s, no Node required
 
 cd web
@@ -253,6 +253,9 @@ What this does *not* yet do, in rough priority order:
 - **Top-up linking is not applied on the DB path.** `link_topups` is a cross-transaction pass
   and only runs in the in-memory pipeline. Until it is wired, a wallet top-up and the spend it
   funds both count — the simulation measures this as +320 phantom expense over two months.
+- **Top-up linking does not run on the DB path.** `link_topups` is a cross-transaction pass
+  that exists only in the in-memory pipeline, so a wallet top-up and the spend it funds both
+  count. The simulation measures this at +320 phantom expense over two months.
 - **`template_id` is written as NULL** on every parse, so there is no record of which template
   matched and `hit_count` never climbs.
 - **Code templates cannot be edited from the UI.** Derived templates live in `sms_templates`

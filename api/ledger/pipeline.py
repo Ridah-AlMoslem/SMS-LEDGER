@@ -122,6 +122,19 @@ def _legs_for(sender, tp, f, acct, identifiers, funding_account, cashback_accoun
     if kind == "transfer":
         a_from = identifiers.get((sender, f.get("from_account")))
         a_to = identifiers.get((sender, f.get("to_account")))
+
+        # A wallet transfer names only the OTHER side — the wallet itself is
+        # implied by the sender. Without filling it in from the template's
+        # account hint, a transfer from the wallet to an account you own books
+        # one leg instead of two: money leaves and never arrives, and net worth
+        # drops by an amount that never left your control (AUDIT §4.5).
+        hint = tp.get("account_hint")
+        if hint:
+            if a_from is None and f.get("direction") == "debit":
+                a_from = hint
+            elif a_to is None and f.get("direction") == "credit":
+                a_to = hint
+
         if a_from and a_to and a_from != a_to:
             return [(a_from, "debit", True), (a_to, "credit", True)]
     if kind == "card_payment" and funding_account:

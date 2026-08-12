@@ -100,6 +100,66 @@ tpl("BQ-05", "barq app", "purchase", "ISO",
                    merchant=m[3].strip(), date_raw=m[4].strip(), direction="debit"),
     account_hint="barq")
 
+tpl("BQ-02", "barq app", "transfer", "ISO",
+    rf"^حوالة واردة داخلية\n{A}\s*SAR\nحساب المرسل:\s*(\S+)\n{DT}$",
+    lambda m: dict(amount=parse_amount(m[1]), from_account=last_digits(m[2]),
+                   counterparty_account=last_digits(m[2]),
+                   date_raw=m[3].strip(), direction="credit"),
+    account_hint="barq")
+
+# Outgoing to another institution. The recipient here is the account holder's
+# own name at SAIB — and `لحساب7001` is an owned account, which is what makes
+# this internal. The NAME is not what decides that (§8.2); register
+# ('barq app', 'account', '7001') and account resolution turns this into two
+# legs on its own.
+tpl("BQ-03", "barq app", "transfer", "ISO",
+    rf"^حوالة صادرة محلية\nمبلغ\s*{A}\s*SAR\nرسوم\s*{A}\s*SAR\nالي (.+)\nبنك(.+)\n"
+    rf"لحساب\s*(\S+)\n{DT}$",
+    lambda m: dict(amount=parse_amount(m[1]), fee_amount=parse_amount(m[2]),
+                   counterparty=m[3].strip(), counterparty_bank=m[4].strip(),
+                   to_account=last_digits(m[5]),
+                   counterparty_account=last_digits(m[5]),
+                   date_raw=m[6].strip(), direction="debit"),
+    account_hint="barq")
+
+tpl("BQ-04", "barq app", "transfer", "ISO",
+    rf"^حوالة صادرة داخلية\nالمبلغ:\s*{A}\s*SAR\nالي\s*:\s*(\S+)\n{DT}$",
+    lambda m: dict(amount=parse_amount(m[1]), to_account=last_digits(m[2]),
+                   counterparty_account=last_digits(m[2]),
+                   date_raw=m[3].strip(), direction="debit"),
+    account_hint="barq")
+
+# Two formats share the header `شراء انترنت`. The mada one carries a balance
+# label and a funding account; the Visa one carries a foreign amount. Both are
+# anchored on line 2, which is the only place they differ.
+tpl("BQ-06", "barq app", "purchase", "ISO",
+    rf"^شراء انترنت\nمدي\s*{A}\s*SAR\nالرصيد\s*{A}\nب:\s*(.+)\nحساب:\s*(\S+)\n{DT}$",
+    lambda m: dict(amount=parse_amount(m[1]), balance=parse_amount(m[2]),
+                   merchant=m[3].strip(), card=last_digits(m[4]),
+                   date_raw=m[5].strip(), direction="debit"),
+    account_hint="barq")
+
+# Foreign purchases. The SAR figure in brackets is the amount that actually
+# left the wallet; the foreign one is provenance (§1, FX is metadata, not
+# multi-currency accounting).
+tpl("BQ-07", "barq app", "purchase", "ISO",
+    rf"^شراء نقاط البيع دولية\n(.+)\nالمبلغ\s*{A}\s*([A-Z]{{3}})\s*\({A}\s*SAR\)\s*"
+    rf"الصرف\s*≈\s*([\d.]+)\nالرصيد\s*{A}\nلدي:\s*(.+)\n{DT}$",
+    lambda m: dict(scheme=m[1].strip(), original_amount=parse_amount(m[2]),
+                   original_currency=m[3], amount=parse_amount(m[4]),
+                   fx_rate=float(m[5]), balance=parse_amount(m[6]),
+                   merchant=m[7].strip(), date_raw=m[8].strip(), direction="debit"),
+    account_hint="barq")
+
+tpl("BQ-08", "barq app", "purchase", "ISO",
+    rf"^شراء انترنت\n(\S+)\s*{A}\s*([A-Z]{{3}})\s*\({A}\s*SAR\)\nرصيد\s*{A}\n"
+    rf"لدي\s*(.+)\n{DT}$",
+    lambda m: dict(scheme=m[1].strip(), original_amount=parse_amount(m[2]),
+                   original_currency=m[3], amount=parse_amount(m[4]),
+                   balance=parse_amount(m[5]), merchant=m[6].strip(),
+                   date_raw=m[7].strip(), direction="debit"),
+    account_hint="barq")
+
 # -------------------------------- STC ----------------------------------
 # Eight formats, and three traps worth naming before the patterns:
 #

@@ -82,6 +82,14 @@ SELECT id, 'AlRajhiBank', 'card', '0256' FROM accounts WHERE slug = 'alrajhi_car
 UNION ALL
 -- Barq names the funding card, not the wallet, so this maps to the card.
 SELECT id, 'barq app', 'card', '0256' FROM accounts WHERE slug = 'alrajhi_card'
+UNION ALL
+-- Barq names the DESTINATION when you send money to your SAIB current account
+-- (`لحساب7001`, bank `INVESTMENT BANK`). Without this row the transfer looks
+-- like money leaving for a stranger and is counted as spending; with it, the
+-- pipeline books both legs and net worth correctly does not move (§8.2).
+-- The recipient name on that message is your own, which is exactly why the
+-- ACCOUNT is what decides and the name is ignored.
+SELECT id, 'barq app', 'account', '7001' FROM accounts WHERE slug = 'saib_current'
 ON CONFLICT (institution, kind, value) DO NOTHING;
 
 

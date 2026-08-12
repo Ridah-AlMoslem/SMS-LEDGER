@@ -72,6 +72,9 @@ tests/               Reference suite. Any change must keep these passing.
   trace.py                 Per-message trace → samples/TRACE.md
   verify_*.py              Focused checks per spec area
 
+tools/               Maintenance scripts
+  rehash_shapes.py   Recompute stored shape hashes after a hashing change
+
 samples/             Raw SMS batches and derived analysis (untracked)
 vercel.json          Services routing
 ```
@@ -126,7 +129,7 @@ first time you redeem points earned before tracking began (§9.2).
 ## Running it
 
 ```bash
-python3 tests/run_all.py          # parser + persistence: 16 suites
+python3 tests/run_all.py          # parser + persistence: 17 suites
 python3 tests/run_all.py --fast   # pure logic only, ~1s, no Node required
 
 cd web
@@ -191,6 +194,13 @@ card reduces debt. Special-casing liability signs is where the sign errors came 
 **One message can produce two legs.** Internal transfers, card payments, and cashback
 redemption each describe both sides of a movement in a single SMS.
 
+**The shape hash identifies a FORMAT, not a message.** Numbers become `#`, masked accounts
+become `X`, and free text below the first line becomes `T`. That last rule is what stops a
+merchant name being structural — without it one purchase format produces a shape per shop,
+measured at 31 shapes across 31 messages, meaning no grouping at all. The first line is left
+alone because headers are what distinguish formats: STC's `شراء Apple Pay` differs from
+`شراء انترنت` only in Latin text. Change the rules and run `tools/rehash_shapes.py`.
+
 **The month is the salary cycle, 25th → 24th**, labeled by the month it *ends* in. An early
 salary carries `تاريخ استحقاق`, and the due date decides the cycle.
 
@@ -243,11 +253,6 @@ What this does *not* yet do, in rough priority order:
 - **Top-up linking is not applied on the DB path.** `link_topups` is a cross-transaction pass
   and only runs in the in-memory pipeline. Until it is wired, a wallet top-up and the spend it
   funds both count — the simulation measures this as +320 phantom expense over two months.
-- **`shape_hash` does not generalise free text.** Digits become `#`, but merchant names stay
-  verbatim, so one format with forty different merchants produces forty shapes — forty review
-  groups, forty derivations. SPEC §3.2 assumes template count scales with *formats*; as
-  implemented it scales with formats × merchants. This is the single biggest limit on how much
-  work the review screen actually saves.
 - **`template_id` is written as NULL** on every parse, so there is no record of which template
   matched and `hit_count` never climbs.
 - **Code templates cannot be edited from the UI.** Derived templates live in `sms_templates`

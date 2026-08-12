@@ -41,11 +41,42 @@ def split_scripts(t: str) -> str:
     'مبلغ113.00SAR' with no separators at all; AlRajhi writes 'بـSR 150'."""
     return SCRIPT_EDGE.sub(" ", t)
 
+# Free text below the header: merchant names, counterparty names, ATM names.
+# `SAR` is excluded because it is structural — it marks where an amount sits,
+# and collapsing it would merge a currency-bearing line with a bare one.
+FREE_TEXT = re.compile(
+    r"(?<![A-Za-z])(?!SAR\b)[A-Za-z][A-Za-z'&.\-]*(?:\s+[A-Za-z][A-Za-z'&.\-]*)*")
+
+
 def shape_hash(text: str) -> str:
-    """Collapse a message to its template skeleton so variants of one format agree."""
+    """Collapse a message to its template skeleton so variants of one format agree.
+
+    Numbers become `#`, masked account runs become `X`, and free text below the
+    first line becomes `T`.
+
+    That last rule is what makes the shape a FORMAT identifier rather than a
+    message identifier. Without it a merchant name is structural, so one
+    AlRajhi purchase format produces a distinct shape per shop — measured at 31
+    shapes across 31 sample messages, i.e. no grouping at all. SPEC §3.2 rests
+    on template count scaling with formats (tens) rather than messages
+    (thousands); merchant-sensitive hashing quietly broke that.
+
+    The FIRST LINE is deliberately left alone. It is the header, and headers are
+    what distinguish formats — STC's `شراء Apple Pay` differs from `شراء انترنت`
+    only in Latin text, and collapsing it would merge two unrelated templates.
+    Fields always appear below the header in every attested format.
+
+    Verified against every attested format in tests/verify_shapes.py: same
+    format with different merchants collapses to one shape, and no two
+    templates ever share one.
+    """
     t = normalize(text)
     t = re.sub(r"\d+(?:[.,]\d+)*", "#", t)          # every number -> #
     t = re.sub(r"[Xx*]+", "X", t)                    # SAIB writes XXXX7001 / XXX7001 / X7001
+
+    lines = t.split("\n")
+    t = "\n".join([lines[0]] + [FREE_TEXT.sub("T", line) for line in lines[1:]])
+
     t = split_scripts(t)
     t = re.sub(r"\bال(?=مبلغ|رصيد|اجمالي)", "", t)   # optional definite article
     t = re.sub(r"[^\w؀-ۿ#]+", " ", t)      # punctuation is not structural

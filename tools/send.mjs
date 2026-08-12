@@ -13,21 +13,43 @@
  * pass here is evidence about that code specifically, not about node's crypto.
  */
 
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const signer = require("./shortcut-signer.js");
 
-const [sender, body] = process.argv.slice(2);
+const [sender, bodyArg] = process.argv.slice(2);
 const secret = process.env.INGEST_SECRET;
 const base = (process.env.BASE_URL ?? "").replace(/\/$/, "");
 
-if (!sender || !body || !secret || !base) {
+if (!sender || !bodyArg || !secret || !base) {
   console.error(
     "usage: INGEST_SECRET=... BASE_URL=https://<app>.vercel.app \\\n" +
+      '         node tools/send.mjs "<sender>" @path/to/message.txt\n' +
       '         node tools/send.mjs "<sender>" "<body>"\n\n' +
-      "Body may be multi-line; quote it, or use \"$(cat file.txt)\".",
+      "Prefer @file. A bank SMS is right-to-left, multi-line, and full of\n" +
+      "characters a shell wants to interpret; reading it from a file keeps\n" +
+      "the terminal out of the loop entirely. Command substitution also\n" +
+      "strips trailing newlines, so \"$(cat f)\" does not send what is in f.",
   );
+  process.exit(1);
+}
+
+// @file reads the bytes as they are. Anything else is taken literally.
+let body = bodyArg;
+if (bodyArg.startsWith("@")) {
+  const path = bodyArg.slice(1);
+  try {
+    body = readFileSync(path, "utf8");
+  } catch (err) {
+    console.error(`Could not read ${path} — ${err.code ?? err.message}`);
+    process.exit(1);
+  }
+}
+
+if (!body.trim()) {
+  console.error("The message body is empty.");
   process.exit(1);
 }
 

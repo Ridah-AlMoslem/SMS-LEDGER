@@ -14,6 +14,8 @@
 samples/
 sms.txt
 *.private.txt
+tmp/
+*.msg.txt
 
 # Secrets. Vercel takes environment variables from project settings; a .env
 # file reaching the build is only ever a leak.

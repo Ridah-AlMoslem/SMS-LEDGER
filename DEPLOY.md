@@ -151,13 +151,21 @@ keeps them out of GitHub and does nothing about a build server.
 
 ### Prove the server before you touch the phone
 
-Paste one real message into a scratch file (it is gitignored) and send it:
+Copy one real bank SMS to the clipboard, then:
 
 ```bash
-cat > /tmp/msg.txt        # paste, then ctrl-D
-INGEST_SECRET='<the secret>' BASE_URL='https://<project>.vercel.app' \
-  node tools/send.mjs "STC Bank" "$(cat /tmp/msg.txt)"
+pbpaste > /tmp/msg.txt
+INGEST_SECRET="$(grep '^INGEST_SECRET=' api/.env | cut -d= -f2- | tr -d '\n')" \
+BASE_URL='https://<project>.vercel.app' \
+  node tools/send.mjs "AlRajhiBank" @/tmp/msg.txt
 ```
+
+`pbpaste` and `@file` both exist to keep the shell away from the message. A
+bank SMS is right-to-left and multi-line, so pasting it into a terminal
+scrambles on screen and invites a stray quote; and `"$(cat f)"` strips trailing
+newlines, so it does not send what is in the file. The `@` form reads the bytes
+as they are, which is the point — you are testing whether a real message
+verifies, so it has to be a real message.
 
 `202 Accepted` means the deployment, the secret, the database, the schema and
 the dedup path are all correct, and anything that goes wrong afterwards is the
@@ -202,6 +210,30 @@ select vault.create_secret(
   '<CRON_SECRET>', 'sms_ledger_cron_secret', 'X-Cron-Secret for /api/parse-tick');
 select vault.create_secret(
   'https://<project>.vercel.app', 'sms_ledger_base_url', 'Vercel origin');
+```
+
+**Check, before going further.** Vault happily stores the literal string
+`<CRON_SECRET>` if you run that with the placeholder still in it, and nothing
+downstream complains: the tick sends the wrong header, the endpoint returns
+401, and `cron.job_run_details` still reports success. The cost of finding out
+later is that you go looking in the wrong system.
+
+```sql
+select name, length(decrypted_secret) as len, left(decrypted_secret, 4) || '…' as starts
+  from vault.decrypted_secrets where name like 'sms_ledger%';
+```
+
+`CRON_SECRET` comes from `openssl rand -hex 32`, so `len` must be **64**. A
+length of 13 is the placeholder — `<CRON_SECRET>` is 13 characters. Fix it in
+place rather than creating a second secret; the name is unique, so a duplicate
+`create_secret` errors, and the update wants the UUID:
+
+```sql
+select vault.update_secret(
+  (select id from vault.secrets where name = 'sms_ledger_cron_secret'),
+  '<the real secret>',
+  'sms_ledger_cron_secret',
+  'X-Cron-Secret for /api/parse-tick');
 ```
 
 **3c. The job body**

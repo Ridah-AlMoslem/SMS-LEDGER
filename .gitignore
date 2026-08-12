@@ -10,6 +10,12 @@ samples/COLLECTION.md
 sms.txt
 *.private.txt
 
+# Scratch space for pasting a message into, when testing ingest by hand.
+# A single mistyped path — tmp/msg.txt instead of /tmp/msg.txt — is enough to
+# put a real SMS inside the repo, where `git add -A` would commit it for good.
+tmp/
+*.msg.txt
+
 # Secrets
 .env
 .env.*

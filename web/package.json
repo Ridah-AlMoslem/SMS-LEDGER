@@ -6,7 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:seed": "node scripts/run-sql.mjs scripts/seed.local.sql",
+    "db:sql": "node scripts/run-sql.mjs",
+    "db:test": "node scripts/pgserver.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",

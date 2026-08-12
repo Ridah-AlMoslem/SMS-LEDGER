@@ -78,34 +78,58 @@ vercel.json          Services routing
 
 ---
 
+## Setup
+
+**1. Fill in the environment.** `web/.env.local` and `api/.env` already exist and are
+gitignored. `INGEST_SECRET` and `CRON_SECRET` are generated; the Supabase values are not:
+
+| Variable | Where to get it |
+|---|---|
+| `DATABASE_URL` | Supabase → Project Settings → Database → Connection string (URI). Use the **pooled** connection, port **6543**. Goes in both files. |
+| `DIRECT_URL` | Same page, **direct** connection, port **5432**. `web/.env.local` only — migrations need it. |
+| `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Project Settings → API |
+| `SUPABASE_SERVICE_ROLE_KEY` | Same page. Server-side only — never expose it to the browser. |
+
+**2. Apply the migration and seed your accounts.**
+
+```bash
+cd web && npx drizzle-kit migrate
+psql "$DIRECT_URL" -f scripts/seed.sql     # edit the opening balances first
+```
+
+Opening balances are not optional. Without them, reconciliation has no anchor on the SAIB
+accounts — which report no balance in any message — and the cashback wallet goes negative the
+first time you redeem points earned before tracking began (§9.2).
+
 ## Running it
 
-**Parser suite** — no install, Python 3.10+:
-
 ```bash
-python3 tests/simulate_two_months.py
-for f in tests/verify_*.py; do python3 "$f" || echo "FAILED: $f"; done
+python3 tests/run_all.py          # everything: pure logic + real Postgres
+python3 tests/run_all.py --fast   # pure logic only, ~1s, no Node required
+
+cd web && npm run dev             # web only
+vercel dev                        # both services, Vercel routing applied
 ```
 
-**Web:**
+## Testing
 
-```bash
-cd web && npm install && npm run dev
-```
+Two tiers, and the split is deliberate.
 
-**Both services together**, with Vercel routing applied locally:
+**Pure logic** — no database, no network, about a second. Proves the parser computes the right
+answer. The two-month simulation audits 50 generated messages against ground truth the
+generator emits alongside them, so it compares against known-correct values rather than an
+eyeball check.
 
-```bash
-vercel dev
-```
+**Persistence** — real Postgres via [PGlite](https://pglite.dev) over the actual wire
+protocol, with the current migrations applied, so `psycopg` connects exactly as it will to
+Supabase. This tier exists because the expensive bugs live in the gap between parsing and
+storage, and a mock would simply agree with whatever the code did.
 
-**Migrations:**
-
-```bash
-cd web && npx drizzle-kit generate && npx drizzle-kit migrate
-```
-
-Copy `.env.example` to `web/.env.local` and `api/.env` and fill it in first.
+It has already earned its keep. It caught a `TypeError` on every dated message — the parser
+built naive datetimes and Postgres returns `TIMESTAMPTZ` — which the pure suite could not see,
+because in-memory fixtures are naive on both sides. The underlying issue was worse than the
+crash: bank SMS print Riyadh wall-clock, and comparing that against UTC files a 00:30
+transaction into the previous day, which for a payday means the previous *salary cycle*.
 
 ---
 
@@ -166,11 +190,23 @@ Full table in `SPEC.md` §12.
 
 | # | Milestone | State |
 |---|---|---|
-| 0 | Period functions | **Done** — `ledger/periods.py`, verified over a multi-year range |
-| 1 | Schema + migrations | Schema written, migrations not yet generated |
-| 2 | Ingest endpoint | HMAC + dedup written, DB write is a TODO |
-| 3 | Normalization + classification | **Done** — `ledger/normalize.py`, `ledger/classify.py` |
-| 4 | Template engine | **Done in-memory** — `ledger/registry.py`; template CRUD not built |
+| 0 | Period functions | **Done** — verified over a multi-year range |
+| 1 | Schema + migrations | **Done** — 12 tables, applied and tested against real Postgres |
+| 2 | Ingest endpoint | **Done** — HMAC, replay window, dedup, 202 on redelivery |
+| 3 | Normalization + classification | **Done** |
+| 4 | Template engine | **Done in-memory** — template CRUD and persistence not built |
 | 5 | Gemini fallback | Deferred past v1 |
-| 6 | Transaction writer | Logic done in `ledger/pipeline.py`; persistence not wired |
+| 6 | Transaction writer | **Thin slice done** — claim, parse, post, mark. See gaps below |
 | 7 | Manual workbench | Not started |
+
+A signed message now goes in one end and comes out as a transaction row on the page. What that
+slice does *not* yet do, in rough priority order:
+
+- **Top-up linking is not applied on the DB path.** `link_topups` is a cross-transaction pass
+  and only runs in the in-memory pipeline. Until it is wired, a wallet top-up and the spend it
+  funds both count — the simulation measures this as +320 phantom expense over two months.
+- **Reconciliation is not wired.** Snapshots are written, but nothing compares computed against
+  reported balances yet, so drift is currently invisible.
+- **Templates live in code, not the database.** `sms_templates` is created and empty;
+  `registry.py` is still the source of truth.
+- **No transfer pairing, no rules engine, no categories.** Transactions land uncategorized.

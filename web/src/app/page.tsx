@@ -1,69 +1,125 @@
-import Image from "next/image";
+import { desc, eq } from "drizzle-orm";
 
-export default function Home() {
+import { getDb, schema } from "@/db";
+
+// Ledger data changes on every parser tick, so never prerender this.
+export const dynamic = "force-dynamic";
+
+const SAR = new Intl.NumberFormat("en-US", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+
+const WHEN = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "short",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: "Asia/Riyadh",
+});
+
+async function getTransactions() {
+  const db = getDb();
+  return db
+    .select({
+      id: schema.transactions.id,
+      postedAt: schema.transactions.postedAt,
+      amount: schema.transactions.amount,
+      direction: schema.transactions.direction,
+      type: schema.transactions.type,
+      merchant: schema.transactions.merchantRaw,
+      biller: schema.transactions.biller,
+      isInternal: schema.transactions.isInternalTransfer,
+      accountName: schema.accounts.name,
+    })
+    .from(schema.transactions)
+    .innerJoin(schema.accounts, eq(schema.accounts.id, schema.transactions.accountId))
+    .orderBy(desc(schema.transactions.postedAt))
+    .limit(100);
+}
+
+function Empty({ title, body }: { title: string; body: string }) {
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+    <div className="rounded-lg border border-black/10 dark:border-white/15 p-8 text-center">
+      <p className="font-medium">{title}</p>
+      <p className="mt-2 text-sm opacity-70">{body}</p>
+    </div>
+  );
+}
+
+export default async function Page() {
+  let rows: Awaited<ReturnType<typeof getTransactions>>;
+
+  try {
+    rows = await getTransactions();
+  } catch (err) {
+    return (
+      <main className="mx-auto w-full max-w-3xl p-6">
+        <h1 className="text-xl font-semibold">Ledger</h1>
+        <div className="mt-6">
+          <Empty
+            title="Can't reach the database"
+            body={err instanceof Error ? err.message : String(err)}
+          />
         </div>
       </main>
-    </div>
+    );
+  }
+
+  return (
+    <main className="mx-auto w-full max-w-3xl p-6">
+      <header className="flex items-baseline justify-between">
+        <h1 className="text-xl font-semibold">Ledger</h1>
+        <span className="text-sm opacity-60">
+          {rows.length} {rows.length === 1 ? "transaction" : "transactions"}
+        </span>
+      </header>
+
+      <div className="mt-6">
+        {rows.length === 0 ? (
+          <Empty
+            title="No transactions yet"
+            body="Send a signed message to /api/ingest, then run the parse tick."
+          />
+        ) : (
+          <ul className="divide-y divide-black/10 dark:divide-white/10">
+            {rows.map((t) => {
+              const credit = t.direction === "credit";
+              // A description can be an Arabic biller name or a Latin merchant
+              // string; .sms-body isolates the bidi run so a right-to-left name
+              // cannot reorder the row around it.
+              const label = t.merchant ?? t.biller ?? t.type;
+
+              return (
+                <li key={t.id} className="flex items-center gap-4 py-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="sms-body truncate font-medium">{label}</p>
+                    <p className="mt-0.5 text-xs opacity-60">
+                      {WHEN.format(t.postedAt)} · {t.accountName}
+                      {t.isInternal ? " · internal" : ""}
+                    </p>
+                  </div>
+
+                  <div
+                    className={`tabular shrink-0 text-sm ${
+                      credit ? "text-emerald-600 dark:text-emerald-400" : ""
+                    }`}
+                  >
+                    {credit ? "+" : "−"}
+                    {SAR.format(Number(t.amount))}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+
+      <p className="mt-8 text-xs opacity-50">
+        Internal transfers are shown but excluded from spending totals — moving your own money
+        is not an expense.
+      </p>
+    </main>
   );
 }

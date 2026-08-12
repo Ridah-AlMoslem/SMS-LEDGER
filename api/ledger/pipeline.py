@@ -5,6 +5,7 @@ bank sends only one SMS. Those produce two legs from one message, so balances
 move on both sides and `d(net worth) == income - expense` still holds.
 """
 import hashlib
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from .normalize import normalize, shape_hash
 from .classify import classify
@@ -16,6 +17,139 @@ from .topup import link_topups
 LEDGER_KINDS = {"purchase","transfer","transfer_in","salary","profit","card_payment",
                 "bill_payment","wallet_topup","cashback_accrual","cashback_redeem","withdrawal"}
 
+
+def body_hash(sender, body, received_at):
+    """Dedup key (SPEC §10.2). received_at is folded in at minute precision
+    because some senders omit any timestamp inside the body — without it, two
+    genuinely separate identical purchases collapse into one."""
+    return hashlib.sha256(
+        f"{sender}|{normalize(body)}|{received_at:%Y-%m-%d %H:%M}".encode()).hexdigest()
+
+
+@dataclass
+class ParseResult:
+    """What one message produced. No ids, no storage — the caller assigns those.
+
+    This is the seam between the parser and persistence. The parser stays pure
+    and stdlib-only so the verification suite can exercise it without a
+    database, and the service writes the result wherever it likes.
+    """
+    status: str                       # 'parsed' | 'ignored' | 'needs_review'
+    shape: str
+    kind: str | None = None
+    template_id: str | None = None
+    ignored_reason: str | None = None
+    error: str | None = None
+    cycle: str | None = None
+    posted_at: datetime | None = None
+    legs: list = field(default_factory=list)
+    snapshot: dict | None = None
+
+
+def parse_message(sender, body, received_at, identifiers,
+                  funding_account=None, cashback_account="cashback_wallet"):
+    """Classify → match → extract → date → resolve → build legs.
+
+    Returns a ParseResult and touches nothing else. Every early return is a
+    message that must NOT become a transaction: SPEC §7.1 is emphatic that
+    non-transactions reaching the ledger is the most expensive class of bug
+    here, because an OTP carrying an amount silently doubles a real payment.
+    """
+    shape = shape_hash(body)
+    c = classify(body, sender)
+
+    if c["ledger_effect"] == "none":
+        return ParseResult(status="ignored", shape=shape, kind=c["kind"],
+                           ignored_reason=c["kind"])
+    if c["ledger_effect"] == "review":
+        return ParseResult(status="needs_review", shape=shape, kind=c["kind"],
+                           error=c.get("note", "classified but not actionable"))
+    if c["kind"] not in LEDGER_KINDS and c["ledger_effect"] != "snapshot":
+        return ParseResult(status="needs_review", shape=shape, kind=c["kind"],
+                           error=f"unhandled class {c['kind']}")
+
+    tp, f = match(sender, body)
+    if tp is None:
+        return ParseResult(status="needs_review", shape=shape, kind=c["kind"],
+                           error="no template matched")
+
+    ts = received_at
+    if tp["date_format"]:
+        try:
+            ts = parse_date(tp["date_format"], f["date_raw"], received_at)
+        except (DateError, KeyError) as e:
+            return ParseResult(status="needs_review", shape=shape, kind=tp["kind"],
+                               template_id=tp["id"], error=f"date: {e}")
+
+    acct = _resolve_account(sender, tp, f, identifiers)
+    if acct is None:
+        # Never dropped. An unresolved account means a provisional account in
+        # the workbench, because the alternative is silently losing every
+        # message from a newly opened account (SPEC §8.3).
+        return ParseResult(status="needs_review", shape=shape, kind=tp["kind"],
+                           template_id=tp["id"], error="unresolved account")
+
+    cycle = _cycle_for(tp, f, ts)
+    legs = [
+        dict(account=account, direction=direction, is_internal=internal,
+             amount=f["amount"], kind=tp["kind"], ts=ts, cycle=cycle,
+             card_last4=f.get("card"), merchant=f.get("merchant"),
+             balance=f.get("balance") if account == acct else None,
+             counterparty_account=f.get("counterparty_account"),
+             fee_amount=f.get("fee_amount"),
+             original_currency=f.get("original_currency"),
+             biller=f.get("biller"), due_raw=f.get("due_raw"))
+        for account, direction, internal in _legs_for(
+            sender, tp, f, acct, identifiers, funding_account, cashback_account)
+    ]
+
+    return ParseResult(
+        status="parsed", shape=shape, kind=tp["kind"], template_id=tp["id"],
+        cycle=cycle, posted_at=ts, legs=legs,
+        snapshot=(dict(account=acct, balance=f["balance"], ts=ts)
+                  if f.get("balance") is not None else None))
+
+
+def _legs_for(sender, tp, f, acct, identifiers, funding_account, cashback_account):
+    """(account, direction, is_internal) tuples.
+
+    Two legs when one message describes a movement between two accounts you
+    own. Booking only one side leaves the books unbalanced and breaks
+    `d(net worth) == income - expense` (AUDIT §4.5).
+    """
+    kind = tp["kind"]
+    if kind == "transfer":
+        a_from = identifiers.get((sender, f.get("from_account")))
+        a_to = identifiers.get((sender, f.get("to_account")))
+        if a_from and a_to and a_from != a_to:
+            return [(a_from, "debit", True), (a_to, "credit", True)]
+    if kind == "card_payment" and funding_account:
+        return [(acct, "credit", True), (funding_account, "debit", True)]
+    if kind == "cashback_redeem":
+        return [(acct, "credit", True), (cashback_account, "debit", True)]
+    return [(acct, f["direction"], False)]
+
+
+def _cycle_for(tp, f, ts):
+    """Salary carries تاريخ استحقاق — the authoritative cycle anchor (SPEC §5.6).
+    On the raw date alone an early payday lands in the previous cycle, showing
+    one month with double income and the next with none."""
+    if tp["kind"] == "salary" and f.get("due_raw"):
+        mm, dd = f["due_raw"].split("/")
+        year = ts.year + (1 if (ts.month == 12 and mm == "01") else 0)
+        return period_label(datetime(year, int(mm), int(dd)))
+    return period_label(ts)
+
+
+def _resolve_account(sender, tp, f, identifiers):
+    if tp.get("account_hint"):
+        return tp["account_hint"]
+    for key in ("card", "from_account", "to_account"):
+        v = f.get(key)
+        if v and (sender, v) in identifiers:
+            return identifiers[(sender, v)]
+    return identifiers.get((sender, "__default__"))
+
 class Pipeline:
     def __init__(self, accounts, identifiers, owned_cards, funding_account=None,
                  cashback_account="cashback_wallet"):
@@ -26,8 +160,7 @@ class Pipeline:
 
     # ---------------- ingest: verbatim, dedup, never parse ----------------
     def ingest(self, sender, body, received_at):
-        h = hashlib.sha256(
-            f"{sender}|{normalize(body)}|{received_at:%Y-%m-%d %H:%M}".encode()).hexdigest()
+        h = body_hash(sender, body, received_at)
         if h in self.seen: return {"status": "duplicate"}
         self.seen.add(h)
         rec = dict(id=len(self.raw)+1, sender=sender, body=body, received_at=received_at,
@@ -43,74 +176,29 @@ class Pipeline:
         return self
 
     def _process(self, r):
-        c = classify(r["body"], r["sender"])
-        if c["ledger_effect"] == "none":
-            r.update(status="ignored", ignored_reason=c["kind"]); return
-        if c["ledger_effect"] == "review":
-            r.update(status="needs_review",
-                     error=c.get("note", "classified but not actionable")); return
-        if c["kind"] not in LEDGER_KINDS and c["ledger_effect"] != "snapshot":
-            r.update(status="needs_review", error=f"unhandled class {c['kind']}"); return
+        """In-memory bookkeeping around parse_message().
 
-        tp, f = match(r["sender"], r["body"])
-        if tp is None:
-            r.update(status="needs_review", error="no template matched"); return
+        Deliberately thin: the service and this class must go through the same
+        parsing code, or the verification suite stops describing what actually
+        runs in production.
+        """
+        res = parse_message(r["sender"], r["body"], r["received_at"], self.identifiers,
+                            self.funding_account, self.cashback_account)
 
-        ts = r["received_at"]
-        if tp["date_format"]:
-            try: ts = parse_date(tp["date_format"], f["date_raw"], r["received_at"])
-            except (DateError, KeyError) as e:
-                r.update(status="needs_review", template_id=tp["id"], error=f"date: {e}"); return
+        if res.status != "parsed":
+            r.update(status=res.status, ignored_reason=res.ignored_reason,
+                     template_id=res.template_id, error=res.error)
+            return
 
-        acct = self._resolve(r["sender"], tp, f)
-        if acct is None:
-            r.update(status="needs_review", template_id=tp["id"], error="unresolved account"); return
-
-        cycle = self._cycle(tp, f, ts)
-        for account, direction, internal in self._legs(r["sender"], tp, f, acct):
+        for leg in res.legs:
             self.txns.append(dict(
-                id=self.next_id, raw_id=r["id"], template=tp["id"], institution=r["sender"],
-                account=account, kind=tp["kind"], amount=f["amount"], ts=ts, cycle=cycle,
-                direction=direction, is_internal=internal, transfer_group_id=None,
-                card_last4=f.get("card"), merchant=f.get("merchant"),
-                balance=f.get("balance") if account == acct else None,
-                counterparty_account=f.get("counterparty_account"),
-                fee_amount=f.get("fee_amount"), original_currency=f.get("original_currency"),
-                biller=f.get("biller"), due_raw=f.get("due_raw")))
+                id=self.next_id, raw_id=r["id"], template=res.template_id,
+                institution=r["sender"], transfer_group_id=None, **leg))
             self.next_id += 1
-        if f.get("balance") is not None:
-            self.snapshots.append(dict(account=acct, balance=f["balance"], ts=ts))
-        r.update(status="parsed", template_id=tp["id"])
 
-    def _legs(self, sender, tp, f, acct):
-        """(account, direction, is_internal) tuples. Two legs when one message
-        describes a movement between two accounts you own."""
-        kind = tp["kind"]
-        if kind == "transfer":
-            a_from = self.identifiers.get((sender, f.get("from_account")))
-            a_to   = self.identifiers.get((sender, f.get("to_account")))
-            if a_from and a_to and a_from != a_to:
-                return [(a_from, "debit", True), (a_to, "credit", True)]
-        if kind == "card_payment" and self.funding_account:
-            return [(acct, "credit", True), (self.funding_account, "debit", True)]
-        if kind == "cashback_redeem":
-            return [(acct, "credit", True), (self.cashback_account, "debit", True)]
-        return [(acct, f["direction"], False)]
-
-    def _cycle(self, tp, f, ts):
-        """Salary carries تاريخ استحقاق — the authoritative cycle anchor (SPEC §5.6)."""
-        if tp["kind"] == "salary" and f.get("due_raw"):
-            mm, dd = f["due_raw"].split("/")
-            year = ts.year + (1 if (ts.month == 12 and mm == "01") else 0)
-            return period_label(datetime(year, int(mm), int(dd)))
-        return period_label(ts)
-
-    def _resolve(self, sender, tp, f):
-        if tp.get("account_hint"): return tp["account_hint"]
-        for key in ("card", "from_account", "to_account"):
-            v = f.get(key)
-            if v and (sender, v) in self.identifiers: return self.identifiers[(sender, v)]
-        return self.identifiers.get((sender, "__default__"))
+        if res.snapshot is not None:
+            self.snapshots.append(res.snapshot)
+        r.update(status="parsed", template_id=res.template_id)
 
     # ---------------- reporting ----------------
     def counts(self):

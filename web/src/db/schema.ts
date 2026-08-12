@@ -116,6 +116,16 @@ export const snapshotSource = pgEnum("snapshot_source", ["sms", "manual", "compu
 
 export const accounts = pgTable("accounts", {
   id: uuid("id").defaultRandom().primaryKey(),
+  /**
+   * Stable logical name: `saib_current`, `alrajhi_card`, `cashback_wallet`.
+   *
+   * The parser addresses accounts by slug and never sees a UUID — templates
+   * carry hints like `account_hint="cashback_wallet"`, and the verification
+   * suite runs with no database at all. The DB layer resolves slug → id on
+   * write. Renaming a slug breaks template hints, so treat it as an identifier
+   * rather than a label; `name` is the thing you're allowed to change.
+   */
+  slug: text("slug").notNull().unique(),
   name: text("name").notNull(),
   institution: text("institution").notNull(),
   type: accountType("type").notNull(),

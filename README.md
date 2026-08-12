@@ -185,8 +185,11 @@ means adding a new bank account silently loses every message from it, with no er
 `XXXX7001`, `XXX7001`, `X7001`, and `0000xx17001`. Resolution is by suffix, scoped to the
 institution.
 
-**Names never decide transfer direction.** A transfer to your own name at another bank is
-internal; classifying on recipient name books an expense that never happened.
+**Names never decide transfer direction.** Barq custodies client money at ANB, so moving money
+between your wallet and your bank appears at the bank as a transfer to or from
+`BARQ SAFE AND DEPOSIT CLIENT MONEY` — carrying your own name, because it is your money being
+returned. Classifying on the name books a 4,534.07 expense that never happened. Only the
+account identifier gets it right.
 
 **Credit raises net worth, debit lowers it — for assets and liabilities alike.** A credit on a
 card reduces debt. Special-casing liability signs is where the sign errors came from.

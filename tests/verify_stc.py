@@ -19,7 +19,10 @@ from ledger.registry import match                 # noqa: E402
 
 # STC cards are the account holder's own. The three-digit values (318, 713) are
 # other people's accounts and deliberately absent.
-IDENT = {("STC Bank", "5842"): "stc", ("STC Bank", "1152"): "stc"}
+IDENT = {("STC Bank", "5842"): "stc", ("STC Bank", "1152"): "stc",
+         # Barq custodies client money at ANB; 692 is that account as STC
+         # prints it, so a Sarie credit from it is the wallet, not income.
+         ("STC Bank", "692"): "barq"}
 
 # Each message gets a received_at a minute after the timestamp it states,
 # because that is what live ingest looks like. A single shared "now" would fail
@@ -184,7 +187,9 @@ check("ST-07 D/M/YY → 21 Jul", parsed("ST-07").posted_at, datetime(2026, 7, 21
 check("ST-08 FX purchase → 11 Jul", parsed("ST-08").posted_at, datetime(2026, 7, 11, 21, 31))
 
 print("\n[9] ACCOUNT RESOLUTION")
-for tid in ("ST-01", "ST-02", "ST-03", "ST-04", "ST-05"):
+# ST-05 is excluded: it names Barq's custody account, so it splits into two
+# legs and the STC side is the second one. Covered in [12].
+for tid in ("ST-01", "ST-02", "ST-03", "ST-04"):
     check(f"{tid} posts to the STC account", parsed(tid).legs[0]["account"], "stc")
 
 for tid in ("ST-06", "ST-07", "ST-08"):
@@ -196,16 +201,31 @@ r = parsed("ST-07", {})
 check("unknown card goes to review", r.status, "needs_review")
 check("and posts nothing", len(r.legs), 0)
 
-print("\n[10] NOTHING PRODUCES MORE THAN ONE LEG")
-# No STC message names two owned accounts, so none should split.
+print("\n[10] ONLY THE CUSTODY TRANSFER SPLITS")
+# ST-05 names Barq's custody account at ANB, so it is the one STC message that
+# describes a movement between two accounts you own. Everything else is a
+# purchase or a transfer with a stranger.
 for tid in M:
-    check(f"{tid} single leg", len(parsed(tid).legs), 1)
+    want = 2 if tid == "ST-05" else 1
+    check(f"{tid} {want} leg(s)", len(parsed(tid).legs), want)
 
 print("\n[11] TRANSFERS TO UNOWNED ACCOUNTS ARE EXTERNAL")
-for tid in ("ST-01", "ST-03", "ST-05"):
+for tid in ("ST-01", "ST-03"):
     check(f"{tid} not marked internal", parsed(tid).legs[0]["is_internal"], False)
 
-print("\n[12] STALE MESSAGES ARE REJECTED, NOT GUESSED  (§10.4.1)")
+print("\n[12] SARIE FROM BARQ'S CUSTODY ACCOUNT IS INTERNAL, NOT INCOME")
+r = parsed("ST-05")
+check("two legs", len(r.legs), 2)
+check("debit leaves the wallet", (r.legs[0]["account"], r.legs[0]["direction"]),
+      ("barq", "debit"))
+check("credit reaches STC", (r.legs[1]["account"], r.legs[1]["direction"]),
+      ("stc", "credit"))
+check("net worth unmoved",
+      sum(l["amount"] if l["direction"] == "credit" else -l["amount"] for l in r.legs), 0)
+r = parsed("ST-05", {("STC Bank", "5842"): "stc"})
+check("unregistered, it reads as external", r.legs[0]["is_internal"], False)
+
+print("\n[13] STALE MESSAGES ARE REJECTED, NOT GUESSED  (§10.4.1)")
 stale = parse_message("STC Bank", M["ST-01"], datetime(2026, 8, 12, 12, 0), IDENT)
 check("a 4-day-old message fails the live window", stale.status, "needs_review")
 check("and says why", stale.error.startswith("date:"), True)

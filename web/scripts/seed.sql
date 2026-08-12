@@ -115,39 +115,40 @@ ON CONFLICT (institution, kind, value) DO NOTHING;
 -- counterparties, never as the account being debited. Seeding them would make
 -- someone else's account resolve to yours.
 --
--- *692 is an ANB account in a Sarie transfer that carries your own name. If
--- that account is in fact yours, adding it here reclassifies those transfers
--- from external credits to internal moves — which changes your income figures,
--- so confirm before adding it.
---
 -- Note STC masks to THREE digits where every other sender uses four, so the
 -- collision space is a thousand rather than ten thousand. A wrong identifier
 -- is worse than a missing one: missing parks the message in review (§8.3),
 -- wrong posts it silently against the wrong account.
 
+
+-- ---------------------------------------------------------------------------
+-- BARQ'S CUSTODY ACCOUNT AT ANB
+-- ---------------------------------------------------------------------------
+-- Barq holds client money in an account at Arab National Bank (`ARNB` /
+-- `البنك العربي الوطني`), named on statements as
+-- `BARQ SAFE AND DEPOSIT CLIENT MONEY`. Money moving between your wallet and
+-- your bank accounts therefore appears at the OTHER bank as a transfer to or
+-- from that ANB account — carrying your own name, because it is your money
+-- being custodied and returned.
 --
--- TWO OPEN QUESTIONS, both worth money:
+-- Confirmed by the account holder 2026-08-12. Without these rows, three real
+-- movements are misread:
 --
--- 1. ANB. Two messages receive money from an account in YOUR name at ANB —
---    SAIB `XXXX0018 / RIDAH AL MOSLEM` and STC `*692 / RIDAH MOSLEM`. If those
---    are your accounts, add them and the transfers become internal moves; today
---    they count as money arriving from outside. Different last-4, so possibly
---    two ANB accounts:
+--   SAIB   ← 0018   money leaving the wallet reads as income from outside
+--   SAIB   → 1625   money entering the wallet reads as SPENDING (4,534.07)
+--   STC    ← 692    money leaving the wallet reads as income from outside
 --
---    SELECT id, 'SAIB', 'account', '0018' FROM accounts WHERE slug = 'anb_current'
---
---    (needs an `anb_current` account row first).
---
--- 2. Barq's account number as SAIB sees it. SAIB sends to
---    `BARQ SAFE AND DEPOSIT CLIENT MONEY` account `X1625`, and Barq's own
---    purchase messages cite `حساب:**1625`. If 1625 is your wallet rather than
---    Barq's pooled client account, that 4,534.07 transfer is a move into your
---    own wallet, not spending:
---
---    SELECT id, 'SAIB', 'account', '1625' FROM accounts WHERE slug = 'barq'
---
---    Left out until confirmed. A missing identifier overstates expense, which
---    is visible and correctable; a wrong one hides real spending, which is not.
+-- Three different last-4 at one bank, so Barq evidently uses more than one
+-- custody account, or each sender masks a different part of the IBAN. Each row
+-- is scoped to the institution that PRINTED it, so none of them can match
+-- anything from another sender (§8.3).
+INSERT INTO account_identifiers (account_id, institution, kind, value)
+SELECT id, 'SAIB', 'account', '0018' FROM accounts WHERE slug = 'barq'
+UNION ALL
+SELECT id, 'SAIB', 'account', '1625' FROM accounts WHERE slug = 'barq'
+UNION ALL
+SELECT id, 'STC Bank', 'account', '692' FROM accounts WHERE slug = 'barq'
+ON CONFLICT (institution, kind, value) DO NOTHING;
 
 COMMIT;
 

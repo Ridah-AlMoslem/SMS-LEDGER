@@ -20,7 +20,15 @@ from ledger.classify import classify              # noqa: E402
 from ledger.pipeline import parse_message         # noqa: E402
 from ledger.registry import match                 # noqa: E402
 
-IDENT = {("SAIB", "7001"): "saib_current", ("SAIB", "7002"): "saib_savings"}
+# Barq custodies client money at ANB, so money moving between the wallet and a
+# bank account appears here as a transfer to/from that ANB account, carrying the
+# account holder's own name (§8.2 — the name decides nothing, the account does).
+IDENT = {
+    ("SAIB", "7001"): "saib_current",
+    ("SAIB", "7002"): "saib_savings",
+    ("SAIB", "0018"): "barq",
+    ("SAIB", "1625"): "barq",
+}
 
 M = {
 "SA-01": """حوالة واردة: محلية (مقبوله)
@@ -105,7 +113,7 @@ print("\n[2] CLASSIFICATION")
 for key in M:
     check(f"{key} is actionable", classify(M[key], "SAIB")["ledger_effect"], "ledger")
 
-print("\n[3] INCOMING FROM ANOTHER BANK  (§8.2 — the name decides nothing)")
+print("\n[3] INCOMING FROM BARQ'S CUSTODY ACCOUNT  (§8.2)")
 f = fields("SA-01")
 check("amount", f["amount"], 113.0)
 check("sending account", f["from_account"], "0018")
@@ -114,17 +122,20 @@ check("sending bank", f["counterparty_bank"], "البنك العربي الوط�
 check("lands in the current account", f["to_account"], "7001")
 
 r = parsed("SA-01")
-check("one leg — the ANB account is not registered", len(r.legs), 1)
-check("credited to current", (r.legs[0]["account"], r.legs[0]["direction"]),
+check("two legs — this is the wallet, not a stranger", len(r.legs), 2)
+check("debit leaves the wallet", (r.legs[0]["account"], r.legs[0]["direction"]),
+      ("barq", "debit"))
+check("credit reaches current", (r.legs[1]["account"], r.legs[1]["direction"]),
       ("saib_current", "credit"))
-check("not internal", r.legs[0]["is_internal"], False)
-
-# If that ANB account were registered as owned, the same message becomes an
-# internal move instead of incoming money.
-r = parsed("SA-01", {**IDENT, ("SAIB", "0018"): "anb_current"})
-check("registering the sender makes it internal", len(r.legs), 2)
-check("and net worth stops moving",
+check("internal", all(l["is_internal"] for l in r.legs), True)
+check("so it is NOT income — net worth does not move",
       sum(l["amount"] if l["direction"] == "credit" else -l["amount"] for l in r.legs), 0)
+
+# Without the identifier it reads as money arriving from outside, which is
+# what it looked like before Barq's custody arrangement was known.
+r = parsed("SA-01", {("SAIB", "7001"): "saib_current"})
+check("unregistered sender falls back to one external leg", len(r.legs), 1)
+check("and is not internal", r.legs[0]["is_internal"], False)
 
 print("\n[4] BOTH DIRECTIONS BETWEEN OWN ACCOUNTS")
 r = parsed("SA-02-out")
@@ -152,9 +163,17 @@ check("recipient name", f["counterparty"], "BARQ SAFE AND DEPOSIT CLIENT MONEY")
 check("recipient account", f["to_account"], "1625")
 check("zero fee still captured", f["fee_amount"], 0.0)
 
+# 1625 is Barq's custody account: this is topping up the wallet, not spending.
 r = parsed("SA-03")
-check("one leg while 1625 is unregistered", len(r.legs), 1)
-check("debited from current", r.legs[0]["account"], "saib_current")
+check("two legs", len(r.legs), 2)
+check("debit leaves current", (r.legs[0]["account"], r.legs[0]["direction"]),
+      ("saib_current", "debit"))
+check("credit reaches the wallet", (r.legs[1]["account"], r.legs[1]["direction"]),
+      ("barq", "credit"))
+check("internal — 4,534.07 is not spending",
+      all(l["is_internal"] for l in r.legs), True)
+check("net worth unmoved",
+      sum(l["amount"] if l["direction"] == "credit" else -l["amount"] for l in r.legs), 0)
 
 print("\n[6] SALARY AND PROFIT UNCHANGED")
 f = fields("SA-04")

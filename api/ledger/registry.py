@@ -240,15 +240,16 @@ tpl("ST-04", "STC Bank", "transfer", "D/M/YY",
                    date_raw=m[3].strip(), direction="credit"),
     account_hint="stc")
 
-# Sarie instant transfer. The counterparty name here is the account holder's
-# OWN name at another bank — which is exactly why §8.2 says names never decide
-# direction. The ANB account is not an owned identifier, so this stays an
-# external credit rather than an internal transfer. If that ANB account is
-# yours, add it to account_identifiers and this becomes internal automatically.
+# Sarie instant transfer. The counterparty name is the account holder's OWN
+# name — §8.2, names decide nothing — and the sending bank is ANB, which is
+# where Barq custodies client money. `from_account` is exposed so that whether
+# this is external income or a withdrawal from the wallet is decided by
+# account resolution, which is the only thing entitled to decide it.
 tpl("ST-05", "STC Bank", "transfer", "DD-MM-YYYY",
     rf"^حوالة واردة \(سريع\)\n{A}\s*SAR\nمن (.+)\nمن بنك (.+)\nحساب (\S+)\n(.+)\nمرجع (\S+)$",
     lambda m: dict(amount=parse_amount(m[1]), counterparty=m[2].strip(),
                    counterparty_bank=m[3].strip(),
+                   from_account=last_digits(m[4]),
                    counterparty_account=last_digits(m[4]),
                    date_raw=m[5].strip(), reference=m[6].strip(), direction="credit"),
     account_hint="stc")

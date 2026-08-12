@@ -58,10 +58,9 @@ VALUES
   ('barq', 'Barq Wallet', 'barq app', 'wallet', false, 'balance', true,
    0.00, 0.00, '2026-08-12', NULL, false, 6),
 
-  -- STC Bank: real account with transfers, card purchases and Apple Pay in the
-  -- samples. Seeded so the balance is right, but note there are currently ZERO
-  -- STC templates — every STC message will park in the review queue until we
-  -- write them. That is correct behaviour, not a failure (§10.5).
+  -- STC Bank: transfers, Qatta pools, card purchases and Apple Pay. Eight
+  -- templates (ST-01..ST-08). It reports a balance on the FX purchase template
+  -- only, so reconciliation here is real but sparse.
   ('stc', 'STC Bank', 'STC Bank', 'checking', false, 'balance', true,
    0.00, 0.00, '2026-08-12', NULL, false, 7)
 ON CONFLICT (slug) DO NOTHING;
@@ -86,25 +85,31 @@ SELECT id, 'barq app', 'card', '0256' FROM accounts WHERE slug = 'alrajhi_card'
 ON CONFLICT (institution, kind, value) DO NOTHING;
 
 
+-- STC cards. Confirmed owned: both appear as the SOURCE card on purchases
+-- from the STC Bank sender (`بطاقة:*5842`, Apple Pay `من:*1152`).
+INSERT INTO account_identifiers (account_id, institution, kind, value)
+SELECT id, 'STC Bank', 'card', '5842' FROM accounts WHERE slug = 'stc'
+UNION ALL
+SELECT id, 'STC Bank', 'card', '1152' FROM accounts WHERE slug = 'stc'
+ON CONFLICT (institution, kind, value) DO NOTHING;
+
+
 -- ---------------------------------------------------------------------------
 -- NOT SEEDED, deliberately
 -- ---------------------------------------------------------------------------
--- STC cards *5842 and *1152 appear in the samples, and 318 / 713 appear as
--- transfer counterparties. None of them are confirmed as YOUR account, and
--- STC masks to three digits rather than four, which collides sooner.
+-- STC's 318 and 713 are OTHER PEOPLE's accounts — they appear as transfer
+-- counterparties, never as the account being debited. Seeding them would make
+-- someone else's account resolve to yours.
 --
--- A wrong identifier is worse than a missing one: missing means the message
--- parks in review (§8.3), wrong means it posts silently against the wrong
--- account. Nothing is lost by leaving these out — there are no STC templates
--- yet, so no STC message can parse regardless.
+-- *692 is an ANB account in a Sarie transfer that carries your own name. If
+-- that account is in fact yours, adding it here reclassifies those transfers
+-- from external credits to internal moves — which changes your income figures,
+-- so confirm before adding it.
 --
--- Uncomment once confirmed:
---
--- INSERT INTO account_identifiers (account_id, institution, kind, value)
--- SELECT id, 'STC Bank', 'card', '5842' FROM accounts WHERE slug = 'stc'
--- UNION ALL
--- SELECT id, 'STC Bank', 'card', '1152' FROM accounts WHERE slug = 'stc'
--- ON CONFLICT (institution, kind, value) DO NOTHING;
+-- Note STC masks to THREE digits where every other sender uses four, so the
+-- collision space is a thousand rather than ten thousand. A wrong identifier
+-- is worse than a missing one: missing parks the message in review (§8.3),
+-- wrong posts it silently against the wrong account.
 --
 -- Likewise the AlRajhi current account: no message in the samples names it,
 -- so its masked digits are unknown.

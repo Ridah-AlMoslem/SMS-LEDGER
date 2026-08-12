@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PURE = [
     "verify_periods.py", "verify_dates.py", "verify_classification.py",
     "verify_batch3.py", "verify_accounting.py", "verify_lifecycle.py",
-    "verify_pairing.py", "verify_topup.py", "verify_topup_link.py",
+    "verify_pairing.py", "verify_topup.py", "verify_topup_link.py", "verify_stc.py",
     "simulate_two_months.py",
 ]
 

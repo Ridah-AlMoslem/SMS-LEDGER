@@ -16,7 +16,7 @@ Full design: [`SPEC.md`](SPEC.md). Simulation results and the six bugs it caught
 | Layer | Choice | Why |
 |---|---|---|
 | Frontend | **Next.js 16** (App Router) | One deploy, API routes are the backend, no CORS |
-| Parser service | **Python 3.12 + FastAPI** | The parser is already written and verified in Python. Porting it to TypeScript would mean re-deriving Arabic normalization and 12 regexes with no test net during the translation |
+| Parser service | **Python 3.12 + FastAPI** | The parser is already written and verified in Python. Porting it to TypeScript would mean re-deriving Arabic normalization and 20 regexes with no test net during the translation |
 | Deploy | **Vercel Services** | Both services in one project, one repo, one deploy. Routing in `vercel.json` |
 | Database | **Supabase Postgres** | 500 MB free tier; a decade of SMS is well under 100 MB |
 | ORM | **Drizzle** | Owns the schema and migrations. Python uses plain SQL against the same tables, so there is one source of truth |
@@ -26,7 +26,7 @@ Full design: [`SPEC.md`](SPEC.md). Simulation results and the six bugs it caught
 | Client data | **TanStack Query** | Cache + optimistic edits for the CRUD layer |
 | Auth | **Supabase Auth** (magic link), RLS on | Single user, but RLS from day one costs nothing |
 
-**LLM fallback is deferred past v1.** The 12 templates cover every attested format. Unknown
+**LLM fallback is deferred past v1.** The 20 templates cover every attested format. Unknown
 shapes park in the review queue, where hand-parsing one message derives a template and
 reprocesses every message sharing its shape hash — which is what the LLM would do, minus an
 API key, a quota ceiling, and a schema contract to keep honest. Gemini 2.5 Flash-Lite goes in
@@ -53,7 +53,7 @@ api/                 Python service — deployed at /api/*
     normalize.py     Bidi stripping, Arabic-Indic digits, letterform folding,
                      currency tokens, shape hashing
     classify.py      Non-ledger classes short-circuit first
-    registry.py      12 templates, regexes derived only from attested raw text
+    registry.py      20 templates, regexes derived only from attested raw text
     extract.py       Field extraction per template
     dates.py         Per-template date formats + received_at validation
     periods.py       Salary-cycle arithmetic (25th → 24th)
@@ -111,9 +111,13 @@ but are deprecated by end of 2026.
 **2. Apply the migration and seed your accounts.**
 
 ```bash
-cd web && npx drizzle-kit migrate
-psql "$DIRECT_URL" -f scripts/seed.sql     # edit the opening balances first
+cd web
+npm run db:migrate
+npm run db:seed     # runs scripts/seed.local.sql — edit your balances first
 ```
+
+`db:seed` uses the `postgres` package rather than `psql`, which is not installed by default on
+macOS. Re-running is safe: every statement is `ON CONFLICT DO NOTHING`.
 
 Opening balances are not optional. Without them, reconciliation has no anchor on the SAIB
 accounts — which report no balance in any message — and the cashback wallet goes negative the
@@ -160,7 +164,10 @@ Every parser improvement replays across full history. Persist only the parsed re
 parser bug becomes permanent data loss.
 
 **Regexes come only from attested raw text.** If a format has not been observed in a real SMS,
-it does not get a template — it goes to manual review.
+it does not get a template — it goes to manual review. Patterns are written in POST-normalization
+spelling: the normalizer folds `إ`→`ا` and `ى`→`ي`, so the bank's `إلى` and `الى` both reach the
+regex as `الي`. That fold is why STC's outgoing transfer has two identical labels and order is
+the only thing separating name from account.
 
 **Unknown senders go to review, never to the bin.** Dropping unrecognized messages as spam
 means adding a new bank account silently loses every message from it, with no error anywhere.

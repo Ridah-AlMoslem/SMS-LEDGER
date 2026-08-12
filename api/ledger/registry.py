@@ -100,6 +100,89 @@ tpl("BQ-05", "barq app", "purchase", "ISO",
                    merchant=m[3].strip(), date_raw=m[4].strip(), direction="debit"),
     account_hint="barq")
 
+# -------------------------------- STC ----------------------------------
+# Eight formats, and three traps worth naming before the patterns:
+#
+# 1. `إلى` and `الى` both normalize to `الي`. The outgoing-transfer message
+#    uses one spelling for the recipient NAME and the other for the recipient
+#    ACCOUNT, so after folding it has two identical labels. Order is the only
+#    thing separating them.
+#
+# 2. `من:` is likewise overloaded. In an incoming transfer the two `من:` lines
+#    are name then account; in an Apple Pay purchase they are card then
+#    merchant. Only the header line tells them apart, so every pattern is
+#    anchored to it.
+#
+# 3. STC masks accounts to THREE digits (`318`, `713`) where every other sender
+#    uses four. last_digits() keeps ≥3, so these resolve — but the collision
+#    space is a thousand, not ten thousand.
+
+tpl("ST-01", "STC Bank", "transfer", "D/M/YY",
+    rf"^حوالة داخلية صادرة\nب:\s*{A}\s*SAR\nالي:\s*(.+)\nالي:\s*(\S+)\nفي:\s*{DT}$",
+    lambda m: dict(amount=parse_amount(m[1]), counterparty=m[2].strip(),
+                   counterparty_account=last_digits(m[3]), date_raw=m[4].strip(),
+                   direction="debit"),
+    account_hint="stc")
+
+tpl("ST-02", "STC Bank", "transfer", "D/M/YY",
+    rf"^دفع قطة\nمبلغ:\s*{A}\s*SAR\nالي:\s*(.+)\nفي:\s*{DT}$",
+    lambda m: dict(amount=parse_amount(m[1]), counterparty=m[2].strip(),
+                   date_raw=m[3].strip(), direction="debit"),
+    account_hint="stc")
+
+tpl("ST-03", "STC Bank", "transfer", "D/M/YY",
+    rf"^حوالة داخلية واردة\nب:\s*{A}\s*SAR\nمن:\s*(.+)\nمن:\s*(\S+)\nفي:\s*{DT}$",
+    lambda m: dict(amount=parse_amount(m[1]), counterparty=m[2].strip(),
+                   counterparty_account=last_digits(m[3]), date_raw=m[4].strip(),
+                   direction="credit"),
+    account_hint="stc")
+
+tpl("ST-04", "STC Bank", "transfer", "D/M/YY",
+    rf"^استلام قطة\nمبلغ:\s*{A}\s*SAR\nمن:\s*(.+)\nفي:\s*{DT}$",
+    lambda m: dict(amount=parse_amount(m[1]), counterparty=m[2].strip(),
+                   date_raw=m[3].strip(), direction="credit"),
+    account_hint="stc")
+
+# Sarie instant transfer. The counterparty name here is the account holder's
+# OWN name at another bank — which is exactly why §8.2 says names never decide
+# direction. The ANB account is not an owned identifier, so this stays an
+# external credit rather than an internal transfer. If that ANB account is
+# yours, add it to account_identifiers and this becomes internal automatically.
+tpl("ST-05", "STC Bank", "transfer", "DD-MM-YYYY",
+    rf"^حوالة واردة \(سريع\)\n{A}\s*SAR\nمن (.+)\nمن بنك (.+)\nحساب (\S+)\n(.+)\nمرجع (\S+)$",
+    lambda m: dict(amount=parse_amount(m[1]), counterparty=m[2].strip(),
+                   counterparty_bank=m[3].strip(),
+                   counterparty_account=last_digits(m[4]),
+                   date_raw=m[5].strip(), reference=m[6].strip(), direction="credit"),
+    account_hint="stc")
+
+tpl("ST-06", "STC Bank", "purchase", "D/M/YY",
+    rf"^عملية انترنت\nب:\s*{A}\s*SAR\nمن:\s*(.+)\nبطاقة:\s*(\S+)\nفي:\s*{DT}$",
+    lambda m: dict(amount=parse_amount(m[1]), merchant=m[2].strip(),
+                   card=last_digits(m[3]), date_raw=m[4].strip(), direction="debit"))
+
+tpl("ST-07", "STC Bank", "purchase", "D/M/YY",
+    rf"^شراء Apple Pay\nمن:\s*(\S+)\nب:\s*{A}\s*SAR\nمن:\s*(.+)\nفي:\s*{DT}$",
+    lambda m: dict(card=last_digits(m[1]), amount=parse_amount(m[2]),
+                   merchant=m[3].strip(), date_raw=m[4].strip(), direction="debit"))
+
+# Foreign purchase. `اجمالي المبلغ المستحق` is the amount, NOT `ب:`.
+# The base figure excludes the transaction fee, so taking it understates every
+# foreign purchase by roughly 2% and drifts the balance reconciliation by
+# exactly the fee each time (ANALYSIS §113).
+tpl("ST-08", "STC Bank", "purchase", "D/M/YY",
+    rf"^شراء انترنت\nعبر:\s*(\S+?),\s*(.+)\nب:\s*{A}\s*SAR\nمن:\s*(.+)\n"
+    rf"رسوم تحويل العملات:\s*(.+)\nضريبة القيمة المضافة:\s*{A}\s*SAR\n"
+    rf"رسوم العملية:\s*{A}\s*SAR\naجمالي المبلغ المستحق:\s*{A}\s*SAR\n"
+    rf"الرصيد المتبقي:\s*{A}\s*SAR\nالدولة:\s*(\S+)\nفي:\s*{DT}$".replace("aجمالي", "اجمالي"),
+    lambda m: dict(card=last_digits(m[1]), scheme=m[2].strip(),
+                   converted=parse_amount(m[3]), merchant=m[4].strip(),
+                   fx_fee_raw=m[5].strip(), vat=parse_amount(m[6]),
+                   fee_amount=parse_amount(m[7]), amount=parse_amount(m[8]),
+                   balance=parse_amount(m[9]), country=m[10],
+                   date_raw=m[11].strip(), direction="debit"))
+
+
 def match(sender: str, body: str):
     t = normalize(body)
     for tp in T:

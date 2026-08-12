@@ -28,11 +28,13 @@ A single-user web dashboard that builds a complete personal financial ledger fro
 
 | Layer | Choice | Why |
 |---|---|---|
-| Frontend + backend | **Next.js 15 (App Router) on Vercel** | API routes *are* the backend. One repo, one deploy, no CORS. Drop Render entirely. |
+| Frontend | **Next.js 16 (App Router)** | One deploy, no CORS. |
+| Parser service | **Python 3.12 + FastAPI** | The parser is already written and verified in Python. Porting it to TypeScript means re-deriving the Arabic normalization and 12 regexes with no test net during the translation — for no gain. |
+| Deploy | **Vercel Services** | Both services in one project, one repo, one deployment, routed by `vercel.json`. Keeping Python costs no extra host. |
 | Database | **Supabase Postgres** | Free tier is 500 MB — SMS text is tiny, this lasts years. |
-| ORM | **Drizzle** | Typed schema, real SQL migrations, no runtime weight. |
-| Validation | **Zod** | One schema shared by the ingest endpoint, the LLM output contract, and forms. |
-| AI layer | **Gemini 2.5 Flash-Lite**, structured output mode | Free tier: 15 RPM, ~1,000 req/day. Template caching keeps actual usage under ~20/day. |
+| ORM | **Drizzle** | Owns the schema and migrations. The Python service uses plain SQL against the same tables, so the model is defined once. |
+| Validation | **Zod** (TS) / **Pydantic** (Py) | Shared contract at the ingest boundary. |
+| AI layer | **Deferred past v1** | The 12 templates cover every attested format. Unknown shapes park in the review queue, where hand-parsing one message derives a template and reprocesses every message sharing its shape hash — what the LLM would do, minus an API key, a quota ceiling, and a schema contract. Gemini 2.5 Flash-Lite goes in when the queue becomes annoying. |
 | Scheduling | **Supabase `pg_cron`** | Vercel Hobby caps cron at once daily. `pg_cron` is unrestricted and doubles as the keep-alive. |
 | Queue | **`pgmq`** (or a `status` column) | Never parse inside the webhook. |
 | Charts | **Recharts** | Composable, good enough for everything in §11. |
@@ -41,9 +43,10 @@ A single-user web dashboard that builds a complete personal financial ledger fro
 
 ### Free-tier constraints to design around
 
-- **Supabase pauses free projects after 7 days of inactivity.** The `pg_cron` parser tick runs every minute, so this never triggers. Do not remove it.
-- **Vercel Hobby: 60s serverless timeout.** The ingest endpoint returns in <100 ms by design; parsing is async.
+- **Supabase pauses free projects after 7 days of inactivity.** The `pg_cron` parser tick keeps it alive. Do not remove it.
+- **Vercel Hobby: 30s function timeout, cron no more than once daily, UTC only.** The ingest endpoint returns in <100 ms by design and `pg_cron` drives the parser, so neither limit binds.
 - **500 MB database.** A decade of SMS + transactions is well under 100 MB.
+- **Google cut free Gemini quotas 50–80% in Dec 2025.** The current 15 RPM / 1,000 req-per-day figure is post-cut. Do not design near the ceiling.
 
 ---
 
@@ -325,7 +328,7 @@ This matters because payday moves. When the 25th falls on a Friday or Saturday, 
 **Read the anchor when the bank states it.** SAIB's salary message carries the due date explicitly:
 
 ```
-قيد راتب دائن 13,935.76 SAR في 14:04 23-07
+قيد راتب دائن 13,120.45 SAR في 14:04 23-07
 حساب 0000xx17001 تاريخ استحقاق 07/25
 ```
 
@@ -408,7 +411,7 @@ passive_coverage     = passive / expense                    -- % of life the pro
 
 If this identity fails, exactly one of the rules above is being applied wrongly. Assert it in tests, and surface it on the dashboard as a health check — it catches classification errors that no individual balance reconciliation would.
 
-**Worked example** (verified — see `scripts/verify_accounting.py`): salary 12,000; 800 groceries on card; card paid in full; loan payment 2,000 split 300 interest / 1,700 principal; 1,000 + 3,000 moved to savings; savings pays 45 profit.
+**Worked example** (verified — see `tests/verify_accounting.py`): salary 12,000; 800 groceries on card; card paid in full; loan payment 2,000 split 300 interest / 1,700 principal; 1,000 + 3,000 moved to savings; savings pays 45 profit.
 
 | Measure | Correct | Naive (sum all debits) |
 |---|---|---|
@@ -562,7 +565,7 @@ Generalise: **a purchase whose merchant resolves to an owned account is a transf
 
 **Two rows always. Only the classification differs.** Each message is stored and each moves its own account balance — the AlRajhi leg reduces available credit, the Barq leg raises the wallet. Nothing is merged or suppressed. Marking both legs `is_internal_transfer` changes only whether the movement counts as *spending*.
 
-Verified in `scripts/verify_topup.py` — 12 SAR moved from card to wallet, then spent at a shop:
+Verified in `tests/verify_topup.py` — 12 SAR moved from card to wallet, then spent at a shop:
 
 | Classification | Income | Expense | Master invariant |
 |---|---|---|---|
@@ -574,7 +577,7 @@ Real consumption was 12. Booking the legs independently double-counts it — onc
 
 The Barq message is **self-identifying**: `البطاقة: **0256` resolves to an owned account, so the top-up leg can be marked internal on its own, with no pairing required. The AlRajhi leg is marked internal when it pairs on amount and time; if its message never arrives, nothing is lost.
 
-**Decision: the AlRajhi purchase that funds a Barq top-up is booked as a wallet top-up, not spending.** Implemented in `parser/topup.py`, verified by `scripts/verify_topup_link.py`.
+**Decision: the AlRajhi purchase that funds a Barq top-up is booked as a wallet top-up, not spending.** Implemented in `api/ledger/topup.py`, verified by `tests/verify_topup_link.py`.
 
 Matching rule — deliberately narrow, because a false positive *hides a real expense*, which is worse than missing a link:
 
@@ -598,7 +601,7 @@ Real sequence from 2026-08-09: **113.00 SAR appears seven times in seven minutes
 
 Pairing on amount + opposite direction + 5 minutes yields **7 candidate pairs for 3 real transfers**, and cheerfully pairs the traffic fine with an unrelated transfer leg — erasing a genuine 113 expense from the books. Round amounts moving between your own accounts are not an edge case; they are your normal Sunday evening.
 
-Required rules, verified in `scripts/verify_pairing.py` (resolves to exactly 3 pairs, fine left unpaired):
+Required rules, verified in `tests/verify_pairing.py` (resolves to exactly 3 pairs, fine left unpaired):
 
 1. **Both legs must be `transfer`.** A `bill_payment`, `purchase`, or `card_payment` never pairs.
 2. **At least one leg's stated counterparty must resolve to the other leg's account.** Amount and time only break ties among candidates that already satisfy this.
@@ -767,7 +770,7 @@ Run **before** hashing or regex matching. Every step here is a real failure mode
 
 - **Strip bidi control marks** (U+200E, U+200F, U+061C). Confirmed present in real samples: **U+061C sits immediately before every AlRajhi date**, exactly where the date regex anchors. Invisible, and brutal to debug.
 - **Arabic-Indic → ASCII digits**: `٠١٢٣٤٥٦٧٨٩` and `۰۱۲۳۴۵۶۷۸۹` → `0-9`.
-- **Arabic decimal/thousands separators**: `٫` (U+066B) → `.`, `٬` (U+066C) → `,`. Also handle ASCII thousands commas — `13,935.76` appears in salary messages.
+- **Arabic decimal/thousands separators**: `٫` (U+066B) → `.`, `٬` (U+066C) → `,`. Also handle ASCII thousands commas — `13,120.45` appears in salary messages.
 - **Collapse whitespace**: real samples contain double spaces (`رصيد  35.34`) and trailing spaces on most lines. Barq omits spaces entirely (`مبلغ113.00SAR`), so labels must match with optional separators.
 - **Remove tatweel** (`ـ`) and diacritics.
 - **Unify letterforms**: `أإآ`→`ا`, `ى`→`ي`, `ة`→`ه`. Keep the original for display.
@@ -799,7 +802,7 @@ Seven distinct formats across four senders, two of them year-less, and **two sen
 2. Year-less dates take the year from `received_at`, choosing the **most recent past occurrence** — this handles the Dec→Jan rollover.
 3. **Validate**: the parsed timestamp must be `≤ received_at` and within **72 hours** of it. Outside that → `needs_review`.
 
-Rule 3 is the highest-value check in the parser: bank SMS arrive within seconds of the event, so any format misreading lands years away and is caught immediately instead of silently filing a transaction into the wrong salary cycle. Manual paste-import (§10.1) relaxes the window; live ingest never does. Verified against all seven real formats in `scripts/verify_dates.py`.
+Rule 3 is the highest-value check in the parser: bank SMS arrive within seconds of the event, so any format misreading lands years away and is caught immediately instead of silently filing a transaction into the wrong salary cycle. Manual paste-import (§10.1) relaxes the window; live ingest never does. Verified against all seven real formats in `tests/verify_dates.py`.
 
 ### 10.5 LLM contract
 
@@ -984,7 +987,7 @@ Booking both as income double-counts. Booking only the redemption understates in
 
 Neither message carries a date or (for the accrual) a card number, so `posted_at` falls back to `received_at`, the dedup hash must fold in `received_at` (§10.2), and the account resolves by template rather than by identifier.
 
-**A negative savings rate is a valid result, not a bug.** Withdrawing from savings to cover overspending means expense exceeds income for that cycle. Verified (`scripts/verify_accounting.py`, scenario B): salary 12,000, spend 14,000, 3,000 drawn from savings, 50 profit → savings rate −16.2%, net contribution −3,000, and the master invariant still holds. Display it in red; do not clamp it to zero.
+**A negative savings rate is a valid result, not a bug.** Withdrawing from savings to cover overspending means expense exceeds income for that cycle. Verified (`tests/verify_accounting.py`, scenario B): salary 12,000, spend 14,000, 3,000 drawn from savings, 50 profit → savings rate −16.2%, net contribution −3,000, and the master invariant still holds. Display it in red; do not clamp it to zero.
 
 ### 11.6 Alerts, health, and data ownership
 
@@ -1031,7 +1034,7 @@ Milestones 1–7 are the actual product. Everything after is presentation over d
 - **Normalizer unit tests** with real Arabic and English samples from each bank — the highest-value tests in the project
 - **Golden-file parser tests**: fixture SMS → expected transaction JSON. Every parser change replays them.
 - **Accounting invariants** as property tests: internal transfers net to zero; expense excludes card payments and loan principal; `Δ net_worth == income − expense`; `computed_balance == reported_balance` for every fixture stream.
-- **Period math**, run over a multi-year date range (`scripts/verify_periods.py` already does this): every date falls inside exactly one cycle; cycles are contiguous with no gaps or overlaps; boundaries are stable under re-application; labels are unique; observed lengths are exactly {28, 29, 30, 31}.
+- **Period math**, run over a multi-year date range (`tests/verify_periods.py` already does this): every date falls inside exactly one cycle; cycles are contiguous with no gaps or overlaps; boundaries are stable under re-application; labels are unique; observed lengths are exactly {28, 29, 30, 31}.
 - **Period edge cases** as explicit fixtures: the 24th and 25th of a month, February in leap and non-leap years, the December→January rollover, DST-free but timezone-sensitive midnight transactions, and an early-payday salary landing on the 23rd.
 - **Grain independence**: summing all weekly buckets that touch a cycle must *not* equal the cycle total — assert they differ where partial weeks exist, so nobody later "fixes" this into a bug.
 - **Savings credit disambiguation**, the highest-risk classification in the system. Cover: profit wording with no counterpart → income; transfer wording with a counterpart → internal; **transfer wording whose counterpart SMS was dropped → review queue, never income**; profit wording that happens to coincide with an unrelated checking debit → still income. Also assert net contribution can go negative and that a negative savings rate is never clamped.
@@ -1041,7 +1044,7 @@ Milestones 1–7 are the actual product. Everything after is presentation over d
 - **Manual resolution propagates**: deriving a template from one hand-parsed message reprocesses every parked message sharing its shape hash, and leaves unrelated shapes untouched.
 - **Non-transactions never reach the ledger**: declined, balance-alert, statement, OTP, notification, and promo fixtures each produce zero `transactions` rows — and the balance-alert still produces a snapshot.
 - **OTPs carrying amounts** (`كلمة مرور لمرة واحدة ... مبلغ: SAR 113.00`) classify as OTP before any amount is extracted. Fixture every OTP shape found per sender — this is the single most expensive misclassification in the system, because it silently doubles authorised payments.
-- **Pairing under amount collision**: the real 2026-08-09 sequence of seven 113.00 legs resolves to exactly three transfers with the bill payment left unpaired (`scripts/verify_pairing.py`).
+- **Pairing under amount collision**: the real 2026-08-09 sequence of seven 113.00 legs resolves to exactly three transfers with the bill payment left unpaired (`tests/verify_pairing.py`).
 - **Settlement updates, never inserts**: a 1.00 fuel pre-auth followed by a 180.00 settlement yields exactly one transaction at 180.00.
 - **Refund direction**: a refund reduces expense in the original category and never appears as income; a partial refund cannot exceed the original; a cross-cycle refund lands in the *current* cycle and leaves the original cycle's totals byte-identical.
 - **Replay safety**, the highest-consequence test in the suite: after editing a category by hand, a full replay leaves that field untouched; a `manual` transaction survives replay unchanged; a deleted transaction is not resurrected.
@@ -1050,13 +1053,61 @@ Milestones 1–7 are the actual product. Everything after is presentation over d
 
 ---
 
-## 14. Open questions
+## 14. Resolved questions
 
-1. Which banks specifically? Sender IDs and 10–20 real (redacted) sample SMS per bank per language would let the template set be seeded by hand rather than discovered by the LLM.
-3. Salary: single monthly deposit, or multiple/variable income sources?
-4. What exact wording do your savings profit messages use, in both languages? This is now the **primary** discriminator between profit and a transfer (§6), so it's worth getting verbatim rather than inferring.
-5. Does the bank send an SMS for *both* legs of a checking↔savings transfer, or only one? If only one, pairing can never corroborate and the wording carries the classification alone.
-6. Do your banks send **authorization holds** separately from settlement (the classic fuel pre-auth), or only one message per purchase? If only one, §7.2 stays dormant and the `pending` state is never used.
-7. Does any bank message state the **interest/profit portion** of a loan payment, or must APR be entered manually per loan (§6)?
+All answered 2026-08-12. Kept here with their consequences, because several of them are the
+reason a feature is *absent* — and an absent feature with no recorded reason gets rebuilt.
 
-**Logic is now closed** — every flow in §§3–11 has a defined behaviour, and §§6, 7, 9, 11.2 are covered by executable checks in `scripts/`. The remaining eight items are all questions about *bank message content*, which is exactly the next phase: collect samples, map them to templates, and confirm these assumptions against real text.
+**1. Which banks?** `AlRajhiBank`, `SAIB`, `STC Bank`, `barq app`. OTPs arrive from separate
+sender IDs (`SAIB otp`, `STC Bank otp`, `barq app otp`), which is a free first-pass filter —
+but never the only one, since OTPs also arrive on the main sender.
+
+> A `barg app` (with a g) in the first sample batch was a collection typo, not a sender
+> variant. Corrected. Had it been real, half the wallet messages would have diverted to
+> review.
+
+**2. Income shape.** A **single monthly deposit whose amount varies.** Consequences:
+
+- Missing-salary detection keys on *a salary-classified credit landing in the cycle*, never on
+  an amount match. This matters more than it looks: salary is the periodic anchor for the SAIB
+  accounts, which report no balance and are otherwise unreconcilable (§3.3b).
+- Recurring-series inference needs a tolerance band. Exact-amount matching would register
+  every payday as a new series.
+- The two simulated cycles use deliberately different salaries so neither assumption can creep
+  back in unnoticed.
+
+**3. Savings profit wording.** `ايداع أرباح شهر <month> لحساب البركة الادخاري`. Shares no
+vocabulary with `حوالة`, so the profit-vs-transfer discriminator (§6) rests on solid ground.
+Template SA-05. No English variant observed.
+
+**4. Transfer legs.** Checking↔savings produces **one SMS naming both sides**
+(`حوالة صادرة: بين حساباتك`, with both `من` and `الى`). Template SA-02. Pairing can never
+corroborate from a counterpart message, so the wording plus account resolution carries the
+classification alone — and the pipeline emits **two legs from that one message**.
+
+**5. Authorization holds.** **Not sent.** One message per purchase, stating the real amount.
+**§7.2 is dormant**: the `pending` transaction state is never entered and settlement-matching
+is not built in v1. The `state` enum keeps `reversed` and `declined`, which are real.
+
+**6. Loans.** **None.** The `loans` table, amortization, and interest/principal derivation are
+not built. BNPL was already out of scope (§1). `loan_payment` stays in the transaction-type
+enum so adding one later is a seed row rather than a migration.
+
+**7. Cold start.** Opening balances **entered manually**, per account, as of a start date.
+This is what makes reconciliation work from day one on the balance-less SAIB accounts, and it
+is the fix for the negative-wallet flag the simulation raises — cashback redeemed that was
+earned before tracking began (§9.2).
+
+### Still genuinely unknown
+
+Not blockers; the review queue is the designed response to each.
+
+- **No English-language message has ever been observed** from any sender, in any batch. The
+  bilingual template sets exist but the English side is entirely untested against real text.
+- **Never yet seen:** declined transactions, card statement notices, BNPL. Each will arrive as
+  an unknown shape and park in review rather than being dropped (§10.5).
+- **The AlRajhi side of a Barq top-up** — the funding purchase message. Attested only through
+  the simulation's reconstruction, not a captured sample.
+
+**Logic is closed.** Every flow in §§3–11 has a defined behaviour, and §§6, 7, 9, 11.2 are
+covered by executable checks in `tests/`.

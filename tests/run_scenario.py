@@ -19,11 +19,23 @@ IDENT = {("SAIB","7001"):"saib_current", ("SAIB","7002"):"saib_savings",
 OPENING = {"saib_current": 0.0, "saib_savings": 0.0, "alrajhi_card": 12000.0,
            "barq": 0.0, "cashback_wallet": 0.0}
 
+# Salary is NOT constant, and the two cycles differ on purpose.
+#
+# The amount is read from the message (template SA-04 captures it), so nothing
+# in the parser depends on its value. These differ so that nothing downstream
+# can quietly start depending on it either — a missing-salary check that
+# matches on amount, or recurring-series inference that treats a changed figure
+# as a new series, both pass a fixture with two identical paydays and fail on
+# real data. Both values keep the thousands separator so comma parsing stays
+# exercised.
+SALARY_JUL = 12500.00
+SALARY_AUG = 13120.45
+
 
 def build():
     S = Scenario()
     # ============================ JULY CYCLE (25 Jun - 24 Jul) ============================
-    S.salary(D(6,25,14,4), 13935.76, D(6,25,0,0))
+    S.salary(D(6,25,14,4), SALARY_JUL, D(6,25,0,0))
     S.to_savings(D(6,25,20,10), 3000)
     S.card_pos(D(6,26,13,20), 42.50, "TAMIMI MARKETS")
     S.otp(D(6,26,18,0), "STC Bank", 100.00)
@@ -54,7 +66,7 @@ def build():
               "restructured AlRajhi purchase: different labels and field order")
 
     # ============================ AUGUST CYCLE (25 Jul - 24 Aug) ==========================
-    S.salary(D(7,23,14,4), 13935.76, D(7,25,0,0))               # early payday: 25 Jul was a Saturday
+    S.salary(D(7,23,14,4), SALARY_AUG, D(7,25,0,0))             # early payday: 25 Jul was a Saturday
     S.to_savings(D(7,26,20,0), 3000)
     S.card_pos(D(7,27,13,0), 55.00, "TAMIMI MARKETS")
     S.card_foreign(D(7,29,14,33), 23.00, "USD", 86.37, 1.99, 3.755217, "ANTHROPIC", "USA")

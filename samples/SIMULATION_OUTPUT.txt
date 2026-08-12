@@ -24,18 +24,18 @@ MESSAGES  generated 50  |  duplicate submissions rejected 5
 
 [3] LEDGER vs GROUND TRUTH  (cycle = salary cycle, 25th -> 24th)
   cycle                expense (got/want)          earned (got/want)            passive
-  July 2026           625.78 /     625.78     13935.76 /    13935.76   182.16 /  182.16
-  August 2026        1058.91 /    1058.91     13935.76 /    13935.76   206.87 /  206.87
+  July 2026           625.78 /     625.78     12500.00 /    12500.00   182.16 /  182.16
+  August 2026        1058.91 /    1058.91     13120.45 /    13120.45   206.87 /  206.87
   PASS  every cycle total matches the generator exactly
 
 [4] MASTER INVARIANT  d(net worth) == income - expense
   alrajhi_card             144.80
   barq                     158.51
   cashback_wallet          -52.81
-  saib_current           16458.52
+  saib_current           14207.45
   saib_savings            9866.84
   --------------------------------
-  d(net worth)          26575.86   income 28260.55 - expense 1684.69 = 26575.86
+  d(net worth)          24324.79   income 26009.48 - expense 1684.69 = 24324.79
   PASS
 
 [5] RECONCILIATION (accounts that report a balance)
@@ -60,7 +60,7 @@ MESSAGES  generated 50  |  duplicate submissions rejected 5
 
 [9] DASHBOARD VIEW
 
-  July 2026   income   14117.92   expense    625.78   net   13492.14   savings rate  95.6%
+  July 2026   income   12682.16   expense    625.78   net   12056.38   savings rate  95.1%
       Zid                             155.22
       المخالفات المرورية              113.00
       Muvicinem                        89.99
@@ -68,7 +68,7 @@ MESSAGES  generated 50  |  duplicate submissions rejected 5
       DAWAR ALS                        63.20
       TAMIMI MARKETS                   42.50
 
-  August 2026   income   14142.63   expense   1058.91   net   13083.72   savings rate  92.5%
+  August 2026   income   13327.32   expense   1058.91   net   12268.41   savings rate  92.1%
       المخالفات المرورية              300.00
       Innovativ                       210.75
       Muvicinem                       150.00

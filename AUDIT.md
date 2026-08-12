@@ -1,7 +1,7 @@
 # Two-Month Simulation — Audit Report
 
 **Run:** 25 Jun 2026 → 24 Aug 2026 (two salary cycles)
-**Reproduce:** `python3 scripts/simulate_two_months.py`
+**Reproduce:** `python3 tests/simulate_two_months.py`
 **Full output:** `samples/SIMULATION_OUTPUT.txt`
 
 ---
@@ -10,15 +10,15 @@
 
 | File | Purpose |
 |---|---|
-| `parser/normalize.py` | Bidi stripping, Arabic-Indic digits, letterform folding, currency tokens, shape hashing |
-| `parser/classify.py` | Message classification; non-ledger classes short-circuit first |
-| `parser/registry.py` | 12 templates with regexes derived **only** from raw attested text |
-| `parser/dates.py` | Per-template date formats + `received_at` validation |
-| `parser/periods.py` | Salary-cycle arithmetic (25th → 24th) |
-| `parser/topup.py` | Wallet top-up linking |
-| `parser/pipeline.py` | Ingest → dedup → classify → match → extract → date → resolve → post → link |
-| `scripts/scenario.py` | Message generator that emits **ground truth** beside every message |
-| `scripts/simulate_two_months.py` | Runs the scenario and audits output against ground truth |
+| `api/ledger/normalize.py` | Bidi stripping, Arabic-Indic digits, letterform folding, currency tokens, shape hashing |
+| `api/ledger/classify.py` | Message classification; non-ledger classes short-circuit first |
+| `api/ledger/registry.py` | 12 templates with regexes derived **only** from raw attested text |
+| `api/ledger/dates.py` | Per-template date formats + `received_at` validation |
+| `api/ledger/periods.py` | Salary-cycle arithmetic (25th → 24th) |
+| `api/ledger/topup.py` | Wallet top-up linking |
+| `api/ledger/pipeline.py` | Ingest → dedup → classify → match → extract → date → resolve → post → link |
+| `tests/scenario.py` | Message generator that emits **ground truth** beside every message |
+| `tests/simulate_two_months.py` | Runs the scenario and audits output against ground truth |
 
 The generator knows what each message *should* produce, so this is a comparison against known-correct values, not an eyeball check.
 
@@ -38,10 +38,16 @@ Every cycle total matched the generator **exactly**:
 
 | Cycle | Expense | Earned | Passive |
 |---|---|---|---|
-| July 2026 | 625.78 | 13,935.76 | 182.16 |
-| August 2026 | 1,058.91 | 13,935.76 | 206.87 |
+| July 2026 | 625.78 | 12,500.00 | 182.16 |
+| August 2026 | 1,058.91 | 13,120.45 | 206.87 |
 
-Master invariant held: `Δ net worth 26,575.86 == income 28,260.55 − expense 1,684.69`.
+Master invariant held: `Δ net worth 24,324.79 == income 26,009.48 − expense 1,684.69`.
+
+**The two salaries differ on purpose.** The amount is captured from the message by template
+SA-04, so the parser never depends on its value — but a fixture with two identical paydays
+would let something downstream start depending on it without failing. A missing-salary check
+that matches on amount, or recurring-series inference that reads a changed figure as a new
+series, both pass against a constant and break on real data.
 
 Reconciliation against reported balances: AlRajhi card computed **12,144.80** vs reported **12,144.80** (debt 1,855.20); Barq computed **158.51** vs reported **158.51**. SAIB is unreconcilable by design — it reports no balances.
 

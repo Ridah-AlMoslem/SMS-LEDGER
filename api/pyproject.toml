@@ -10,7 +10,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "httpx>=0.27"]
+# httpx2, not httpx: current Starlette's TestClient imports httpx2 and raises a
+# RuntimeError naming it if only httpx is present. verify_endpoints.py is the
+# only thing that needs it.
+dev = ["pytest>=8.3", "httpx2>=0.28"]
 
 [tool.vercel]
 entrypoint = "main:app"

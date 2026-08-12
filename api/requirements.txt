@@ -1,0 +1,16 @@
+# Runtime dependencies, mirroring [project.dependencies] in pyproject.toml.
+#
+# Duplicated on purpose. Vercel's Python builder reads requirements.txt
+# reliably; relying on it to resolve pyproject.toml instead makes the build a
+# thing you find out about at deploy time. Locally it is also the difference
+# between "clone and run the tests" and "guess which packages are missing from
+# five tracebacks".
+#
+#   python3 -m venv .venv && source .venv/bin/activate
+#   pip install -r api/requirements-dev.txt
+#
+# Keep in step with pyproject.toml when either changes.
+
+fastapi>=0.117.1
+pydantic>=2.9
+psycopg[binary]>=3.2

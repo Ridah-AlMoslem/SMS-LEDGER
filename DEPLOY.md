@@ -1,0 +1,361 @@
+# Turning it on
+
+Deploy, schedule the tick, build the Shortcut, land one real message. In that
+order, because each step is only debuggable once the one before it is proven.
+
+The order matters more than it looks. Every step below ends with a check that
+isolates its own failure. Skip them and the first real message fails with one
+symptom — nothing in the database — that has six possible causes across three
+systems you cannot see into.
+
+**The one thing nobody can predict is the sender string.** Every template, the
+`BANK_SENDERS` gate, and every `account_identifiers` row match it exactly, and
+it is whatever iOS decides to report. Step 5 is built around finding out what
+that actually is.
+
+---
+
+## 0. Before you start
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r api/requirements-dev.txt
+
+python3 tests/run_all.py          # 23 suites, all green
+
+git add -A
+git commit -m "Turn it on: raw-body signing, sender aliases, deploy runbook"
+git push
+```
+
+**`git push` alone does nothing.** Vercel builds what is committed, so anything
+still sitting in the working tree is invisible to it — and `push` reports
+"Everything up-to-date" rather than warning you, which is the most misleading
+success message in the sequence. `git status` before you deploy.
+
+If the suite reports `ModuleNotFoundError`, the venv is not active. The pure
+tier runs on stdlib and Node by design; everything touching FastAPI or Postgres
+needs the install above.
+
+Have these ready from `api/.env` and `web/.env.local` — they are already
+generated:
+
+`DATABASE_URL` · `DIRECT_URL` · `INGEST_SECRET` · `CRON_SECRET` · `INTERNAL_SECRET`
+
+---
+
+## 1. Deploy to Vercel
+
+```bash
+npm i -g vercel
+vercel login
+vercel link          # at the repo root, not web/ or api/
+```
+
+Set the environment variables on the project, for **all** environments:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | Transaction pooler, port **6543** |
+| `DIRECT_URL` | Session pooler, port **5432** |
+| `INGEST_SECRET` | from `api/.env` |
+| `CRON_SECRET` | from `api/.env` |
+| `INTERNAL_SECRET` | from `api/.env` — must be identical in both files |
+| `PARSER_URL` | `https://<project>.vercel.app` — see below |
+
+`PARSER_URL` has to be an **absolute** URL. It is read inside a server action,
+where Node's `fetch` rejects a relative path, so the empty-string default that
+works in `vercel dev` fails in production. It is used by exactly one thing —
+the derive button on `/review` — so if it is wrong, ingest, parsing, balances
+and the dashboard all still work and only template derivation breaks. Worth
+knowing which failure you are looking at.
+
+```bash
+vercel deploy --prod
+```
+
+**Check:**
+
+```bash
+curl https://<project>.vercel.app/api/health
+# {"status":"ok"}
+```
+
+If that returns HTML or a login page, Deployment Protection is on. Settings →
+Deployment Protection → turn off Vercel Authentication for production. Neither
+the phone nor `pg_net` can complete an SSO challenge; both would just record a
+401 that looks like a bad secret.
+
+If the build ignores `vercel.json` and tries to build one framework, set the
+project's Framework Preset to **Services**. `services` also requires the
+Services permission on the account — that surfaces as `vercel.json` being
+rejected outright rather than as a build failure.
+
+The Python service installs from `api/requirements.txt`. Keep it in step with
+`pyproject.toml`; a dependency added to only one of them works locally and
+fails in the build.
+
+### Prove the server before you touch the phone
+
+Paste one real message into a scratch file (it is gitignored) and send it:
+
+```bash
+cat > /tmp/msg.txt        # paste, then ctrl-D
+INGEST_SECRET='<the secret>' BASE_URL='https://<project>.vercel.app' \
+  node tools/send.mjs "STC Bank" "$(cat /tmp/msg.txt)"
+```
+
+`202 Accepted` means the deployment, the secret, the database, the schema and
+the dedup path are all correct, and anything that goes wrong afterwards is the
+phone. This signs with `tools/shortcut-signer.js` — the same file the Shortcut
+runs — so a pass here is evidence about that specific code.
+
+`401` is the signature or the secret. `422` is the body shape. `5xx` means it
+reached the database and did not like what it found there.
+
+---
+
+## 2. Migrate and seed
+
+Only if you have not already run these against the real Supabase project:
+
+```bash
+cd web
+npm run db:migrate
+npm run db:seed        # edit scripts/seed.local.sql balances first
+```
+
+Both are safe to re-run. Opening balances are not optional — without them the
+SAIB accounts have no anchor at all, since no SAIB message reports a balance.
+
+---
+
+## 3. Schedule the tick
+
+Run in the Supabase SQL editor.
+
+**3a. Extensions**
+
+```sql
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+```
+
+**3b. Secrets into Vault**
+
+```sql
+select vault.create_secret(
+  '<CRON_SECRET>', 'sms_ledger_cron_secret', 'X-Cron-Secret for /api/parse-tick');
+select vault.create_secret(
+  'https://<project>.vercel.app', 'sms_ledger_base_url', 'Vercel origin');
+```
+
+**3c. The job body**
+
+```sql
+create or replace function public.sms_ledger_tick()
+returns bigint
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  base   text;
+  secret text;
+begin
+  select decrypted_secret into base
+    from vault.decrypted_secrets where name = 'sms_ledger_base_url';
+  select decrypted_secret into secret
+    from vault.decrypted_secrets where name = 'sms_ledger_cron_secret';
+
+  return net.http_post(
+    url     := base || '/api/parse-tick',
+    body    := '{}'::jsonb,
+    headers := jsonb_build_object(
+                 'Content-Type', 'application/json',
+                 'X-Cron-Secret', secret),
+    timeout_milliseconds := 25000
+  );
+end;
+$$;
+
+revoke all on function public.sms_ledger_tick() from public, anon, authenticated;
+```
+
+**3d. Schedule it**
+
+```sql
+select cron.schedule(
+  'sms-ledger-tick', '* * * * *', $$select public.sms_ledger_tick()$$);
+```
+
+Three things here are load-bearing:
+
+**`timeout_milliseconds := 25000`, not the 2000 default.** pg_net *cancels* the
+request at the timeout. A cold Vercel function plus 50 messages plus a balance
+recompute and a reconciliation pass will not finish in two seconds, so the
+default kills every tick that is not already warm — and because pg_net is
+fire-and-forget, `cron.job_run_details` still says the job succeeded. 25s sits
+just inside the Hobby function limit, so the server is the thing that gives up
+first and you get a real status code back.
+
+**A function, not inline SQL.** `cron.job.command` is plain text readable by
+anything that can query the table, including the parser's own connection.
+Vault plus `security definer` keeps the secret out of it.
+
+**This is also the keep-alive.** Supabase pauses free projects after 7 days
+idle. Do not unschedule it.
+
+**Check:**
+
+```sql
+select jobname, schedule, active from cron.job;
+
+-- Did the job fire?
+select status, return_message, start_time
+  from cron.job_run_details order by start_time desc limit 5;
+
+-- What did the endpoint actually say? This is the one that matters — the
+-- query above reports whether Postgres queued a request, not whether it
+-- was accepted.
+select status_code, content, error_msg, created
+  from net._http_response order by created desc limit 5;
+```
+
+A `200` with a counts object is the tick working. A `401` means `CRON_SECRET`
+in Vault and on Vercel disagree.
+
+---
+
+## 4. Build the Shortcut
+
+Install **[Actions](https://apps.apple.com/app/id1586435171)** first — free,
+and it supplies the three things Shortcuts is missing. Restart the phone if the
+actions do not appear; that is a known iOS bug, not a bad install.
+
+Shortcuts has no HMAC action, and its JSON serializer is not something you can
+pin or inspect. Since `/api/ingest` signs the literal request body, the body
+and its signature have to come out of the same code in one step — otherwise
+two serializers have to agree forever, and the day they stop is a bare 401 on
+a phone with no logs.
+
+**Store the secret first.** Actions → **Keychain**, save `INGEST_SECRET` under
+`sms-ledger-secret`. Anything pasted into the shortcut body is readable by
+anyone who opens it or receives a copy.
+
+**Automation:** Automations tab → **Message** → add your banks' sender IDs →
+**Run Immediately**, notifications off.
+
+**The actions, in order:**
+
+1. **Keychain** — read `sms-ledger-secret`.
+2. **Format Date** — Current Date, **ISO 8601**, *include time on*. A
+   date-only value is the most likely cause of a 422.
+3. **Text** — exactly three lines, no labels, no extra blanks:
+
+   ```
+   [Sender]
+   [Formatted Date]
+   [Content]
+   ```
+
+   Sender and the date never contain newlines, so the body is unambiguously
+   everything after the second one — which is why the message's own line
+   breaks need no escaping.
+4. **Transform Text with JavaScript** — input is the Text above; paste
+   `tools/shortcut-signer.js`. Replace `PASTE_INGEST_SECRET_HERE` with the
+   Keychain variable.
+5. **Split Text** by **New Lines** → 1 = signature, 2 = timestamp, 3 = body.
+6. **Get Contents of URL (Extended)** — `POST` to
+   `https://<project>.vercel.app/api/ingest`
+   - Headers: `X-Signature` = item 1, `X-Timestamp` = item 2,
+     `Content-Type` = `application/json`
+   - Request body: **raw text / file**, set to item 3
+7. **If** status code ≠ 202 → **Show Notification** with the status.
+
+Four details that each cost an evening:
+
+- **Use the raw-text body, never Shortcuts' JSON dictionary builder.** The
+  builder re-serializes, the bytes stop matching the signature, and you get a
+  401 that looks exactly like a wrong secret.
+- **Use "Get Contents of URL (Extended)", not the built-in.** The built-in
+  returns only the response body, so a 401 is indistinguishable from success
+  and the automation fails silently forever.
+- **Step 7 is not optional.** iOS message automations fail quietly — phone
+  off, an iOS update disabling the automation, a dropped network. Without a
+  notification the first symptom is a gap in the ledger you notice weeks later.
+- **OTP filter.** The Message trigger can only include senders, not exclude.
+  Add an **If** on Content contains `رمز التحقق` → stop. The server discards
+  OTPs anyway, but §7.1 calls an OTP reaching the ledger the most expensive
+  misclassification in the system, so filter on both sides.
+
+---
+
+## 5. The first real message
+
+Wait for a genuine bank SMS. Then, in order:
+
+```sql
+select sender, status, received_at, last_error, left(body, 40)
+  from raw_messages order by ingested_at desc limit 5;
+```
+
+| What you see | Where it broke | Fix |
+|---|---|---|
+| No row at all | Phone | Automation did not fire, or the POST failed. Step 7's notification tells you which. |
+| Notification: 401 | Phone | Secret mismatch, or clock skew over 5 minutes. |
+| Notification: 422 | Phone | Body shape — almost always Format Date without time. |
+| Row stuck `pending` | Cron | Check `net._http_response`, not `cron.job_run_details`. |
+| `needs_review`, "unrecognised sender" | **The sender string** | Below. This is the expected one. |
+| `needs_review`, "date: … too far before …" | Nothing | A backfilled or old message failing the 72-hour live window. Working as designed. |
+
+### The sender loop
+
+```sql
+select sender, count(*) from raw_messages group by 1 order by 2 desc;
+```
+
+Whatever that prints is the truth. If it does not match `AlRajhiBank`, `SAIB`,
+`STC Bank` or `barq app`, add it to `ALIASES` in `api/ledger/senders.py`:
+
+```python
+ALIASES = {
+    "AlRajhi Bank": "AlRajhiBank",
+}
+```
+
+Case and spacing are already handled, so only genuinely different strings need
+an entry — a different sender ID, or a Contacts name if the number is saved,
+which is the case that catches people out.
+
+Then redeploy and hit **Retry** on the group in `/review`. Aliasing happens at
+parse time, never at ingest, so `raw_messages` keeps what the phone actually
+said and replaying fixes history rather than papering over it.
+
+Do not widen `_key()` to make an unknown sender match. An unrecognised sender
+parking in review is the design (§8.3); fuzzy-matching one onto a bank posts
+real money against an institution nobody confirmed.
+
+---
+
+## 6. Confirm it actually worked
+
+- `/` shows the transaction, and the account balance moved.
+- `/review` is empty, or holds only things you expect.
+- No reconciliation alert. Drift means a message was missed, double-counted or
+  misparsed — that is the whole point of the balance in the SMS.
+
+Then send a second message of a different kind — a purchase after a transfer —
+because one working message proves the pipeline, not the template set.
+
+## Known gaps at switch-on
+
+Neither blocks turning it on; both matter once messages accumulate.
+
+- **`link_topups` does not run on the DB path.** A wallet top-up and the spend
+  it funds are both counted. The two-month simulation measures this at +320 in
+  phantom expense.
+- **No heartbeat.** `/review` flags ingestion as stale after 24 hours with no
+  message, which catches a dead automation — but only if you look at the page.
+  SPEC §10.1 wants a daily ping; there isn't one yet.

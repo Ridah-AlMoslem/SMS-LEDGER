@@ -12,6 +12,7 @@ from .classify import classify
 from .registry import match
 from .dates import parse as parse_date, DateError
 from .periods import period_start, period_label
+from .senders import canonical
 from .topup import link_topups
 
 LEDGER_KINDS = {"purchase","transfer","transfer_in","salary","profit","card_payment",
@@ -57,6 +58,15 @@ def parse_message(sender, body, received_at, identifiers,
     non-transactions reaching the ledger is the most expensive class of bug
     here, because an OTP carrying an amount silently doubles a real payment.
     """
+    # Resolve the sender once, here, before anything reads it. Classification,
+    # template matching and account resolution all key off this string, and
+    # they must agree — a message classified as SAIB but matched against no
+    # template is indistinguishable from a genuinely unknown format.
+    #
+    # Deliberately not applied at ingest: raw_messages keeps what the phone
+    # said, so editing senders.ALIASES and requeueing fixes history (§3.1).
+    sender = canonical(sender)
+
     shape = shape_hash(body)
     lang = detect_language(body)
     c = classify(body, sender)

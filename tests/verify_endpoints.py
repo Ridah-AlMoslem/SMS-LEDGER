@@ -10,6 +10,7 @@ Run: python3 tests/verify_endpoints.py --serve
 
 import hashlib
 import hmac
+import json
 import os
 import subprocess
 import sys
@@ -47,14 +48,24 @@ def check(name, got, want):
 
 
 def signed(client, sender, body, received_at, secret=INGEST_SECRET, skew=0):
-    payload = main.IngestPayload(sender=sender, body=body, received_at=received_at)
-    raw = payload.model_dump_json().encode()
+    """Sign exactly what goes on the wire, the way the phone does.
+
+    Built as bytes and posted as `content=`, not `json=`: the point of the
+    signature is that it covers the literal request body, so the test must not
+    let httpx re-encode a dict in between. Signing one representation and
+    sending another is precisely the bug this shape is here to prevent.
+    """
+    raw = json.dumps(
+        {"sender": sender, "body": body, "received_at": received_at.isoformat()},
+        ensure_ascii=False, separators=(",", ":"),
+    ).encode()
     ts = str(int(time.time()) - skew)
     sig = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
     return client.post(
         "/api/ingest",
-        json={"sender": sender, "body": body, "received_at": received_at.isoformat()},
-        headers={"X-Signature": sig, "X-Timestamp": ts},
+        content=raw,
+        headers={"Content-Type": "application/json",
+                 "X-Signature": sig, "X-Timestamp": ts},
     )
 
 
@@ -91,6 +102,16 @@ def main_test():
     check("mis-signed request rejected", r.status_code, 401)
     r = signed(client, *SALARY, when, skew=600)
     check("replayed request rejected", r.status_code, 401)
+
+    # 401 and 422 must stay distinguishable. From the phone the only thing
+    # visible is a status code, and "you signed it wrong" and "your JSON is
+    # broken" need completely different fixes.
+    junk = b'{"sender": "SAIB"'
+    r = client.post("/api/ingest", content=junk, headers={
+        "Content-Type": "application/json",
+        "X-Signature": hmac.new(INGEST_SECRET.encode(), junk, hashlib.sha256).hexdigest(),
+        "X-Timestamp": str(int(time.time()))})
+    check("signed but malformed body is 422, not 401", r.status_code, 422)
     check("no rows written by rejected requests", _count("raw_messages"), 0)
 
     print("\n[2] INGEST ACCEPTS AND DEDUPS  (§10.2)")
@@ -100,6 +121,18 @@ def main_test():
     r2 = signed(client, *SALARY, when)
     check("redelivery still returns 202", r2.status_code, 202)
     check("redelivery reported as duplicate", r2.json()["status"], "duplicate")
+
+    # The phone cannot reproduce this server's JSON encoder and must not have
+    # to. Same message, different key order, indented separators, an explicit
+    # null — it still verifies, because the signature covers the bytes sent.
+    odd = json.dumps({"received_at": when.isoformat(), "device_id": None,
+                      "body": SALARY[1], "sender": SALARY[0]},
+                     ensure_ascii=False, indent=2).encode()
+    r3 = client.post("/api/ingest", content=odd, headers={
+        "Content-Type": "application/json",
+        "X-Signature": hmac.new(INGEST_SECRET.encode(), odd, hashlib.sha256).hexdigest(),
+        "X-Timestamp": str(int(time.time()))})
+    check("signature covers literal bytes, not a canonical form", r3.status_code, 202)
     check("only one raw row", _count("raw_messages"), 1)
     check("ingest never parses", _count("transactions"), 0)
 

@@ -7,7 +7,8 @@ formats, inconsistent account masking, and bidirectional-text artifacts.
 This repo parses them into a double-entry ledger and puts a dashboard on top.
 
 Full design: [`SPEC.md`](SPEC.md). Simulation results and the six bugs it caught:
-[`AUDIT.md`](AUDIT.md).
+[`AUDIT.md`](AUDIT.md). Switching it on — deploy, `pg_cron`, the Shortcut, the
+first real message: [`DEPLOY.md`](DEPLOY.md).
 
 ---
 
@@ -49,9 +50,12 @@ when the queue becomes annoying, not before.
 api/                 Python service — deployed at /api/*
   main.py            FastAPI entrypoint: /api/ingest, /api/parse-tick, /api/health
   pyproject.toml     Deps + Vercel entrypoint
+  requirements.txt   Same runtime deps, for the Vercel builder and local venvs
+  requirements-dev.txt  Adds what the persistence tier needs
   ledger/            The parser package (pure stdlib, no I/O, no DB)
     normalize.py     Bidi stripping, Arabic-Indic digits, letterform folding,
                      currency tokens, shape hashing
+    senders.py       What iOS reports → the name templates are written against
     classify.py      Non-ledger classes short-circuit first
     registry.py      29 templates — every attested format, all four institutions
     extract.py       Field extraction per template
@@ -74,6 +78,10 @@ tests/               Reference suite. Any change must keep these passing.
 
 tools/               Maintenance scripts
   rehash_shapes.py   Recompute stored shape hashes after a hashing change
+  shortcut-signer.js Builds and signs the request body; paste into the iPhone
+                     Shortcut's "Transform Text with JavaScript" action
+  send.mjs           Send one signed message from a terminal, using that same
+                     signer — proves the server before the phone is involved
 
 samples/             Raw SMS batches and derived analysis (untracked)
 vercel.json          Services routing
@@ -82,6 +90,17 @@ vercel.json          Services routing
 ---
 
 ## Setup
+
+**0. Install the Python dependencies.**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r api/requirements-dev.txt
+```
+
+Without this the pure tier still runs — that is its contract — but everything that touches
+FastAPI or Postgres fails on an import error rather than a test.
 
 **1. Fill in the environment.** Both files already exist and are gitignored:
 `web/.env.local` and `api/.env`. `INGEST_SECRET` and `CRON_SECRET` are already generated.
@@ -129,8 +148,8 @@ first time you redeem points earned before tracking began (§9.2).
 ## Running it
 
 ```bash
-python3 tests/run_all.py          # parser + persistence: 21 suites
-python3 tests/run_all.py --fast   # pure logic only, ~1s, no Node required
+python3 tests/run_all.py          # parser + persistence: 23 suites
+python3 tests/run_all.py --fast   # pure logic only, stdlib + Node, no install needed
 
 cd web
 npm run test:ui                   # accounts + review view logic
@@ -180,6 +199,17 @@ the only thing separating name from account.
 
 **Unknown senders go to review, never to the bin.** Dropping unrecognized messages as spam
 means adding a new bank account silently loses every message from it, with no error anywhere.
+The sender string itself comes from iOS and cannot be predicted, so `senders.py` maps what
+arrives onto what the templates expect — at parse time, never at ingest, so `raw_messages`
+keeps what the phone actually said and a new alias replays across history. Case and spacing
+fold; nothing else does. An unrecognised sender is returned untouched and parks, because
+fuzzy-matching one onto a bank posts real money against an institution nobody confirmed.
+
+**The ingest signature covers the bytes received, not a re-serialization of them.** Signing
+`model_dump_json()` means the phone has to reproduce this server's JSON encoder exactly —
+field order, separator spacing, datetime format, unicode escaping — and every one of those is
+invisible from a phone whose only symptom is a bare 401. It also turns adding a model field
+into a silent breaking change for a client that cannot be redeployed alongside it.
 
 **Never compare masked account strings literally.** One sender writes the same account as
 `XXXX7001`, `XXX7001`, `X7001`, and `0000xx17001`. Resolution is by suffix, scoped to the

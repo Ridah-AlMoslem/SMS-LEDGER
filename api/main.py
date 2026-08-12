@@ -19,8 +19,8 @@ import os
 import time
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, Header, HTTPException, Request
+from pydantic import BaseModel, Field, ValidationError
 
 import db as store
 from ledger.derive import DeriveError, derive
@@ -55,6 +55,14 @@ def verify_signature(raw_body: bytes, signature: str, timestamp: str) -> None:
 
     A public unauthenticated ingest URL means anyone who guesses it can inject
     fabricated transactions into the ledger. This is not optional.
+
+    `raw_body` is the exact bytes off the wire, never a re-serialization of the
+    parsed model. Signing a re-serialization means the sender has to reproduce
+    this server's JSON encoder byte for byte — field order, separator spacing,
+    datetime format, unicode escaping — and every one of those is invisible
+    from the phone, where the only symptom is a bare 401. It also makes adding
+    a field to the model a silent breaking change for a client that cannot be
+    redeployed alongside it.
     """
     if not INGEST_SECRET:
         raise HTTPException(500, "INGEST_SECRET is not configured")
@@ -73,11 +81,31 @@ def verify_signature(raw_body: bytes, signature: str, timestamp: str) -> None:
 
 @app.post("/api/ingest", status_code=202)
 async def ingest(
-    payload: IngestPayload,
+    request: Request,
     x_signature: str = Header(default=""),
     x_timestamp: str = Header(default=""),
 ) -> dict:
-    verify_signature(payload.model_dump_json().encode(), x_signature, x_timestamp)
+    # Signature first, parsing second. An unsigned request should never reach
+    # the JSON parser at all — that is unauthenticated attacker-controlled
+    # input, and validating it before authenticating it is backwards.
+    raw = await request.body()
+    verify_signature(raw, x_signature, x_timestamp)
+
+    try:
+        payload = IngestPayload.model_validate_json(raw)
+    except ValidationError as exc:
+        # 422 with the field errors, matching what FastAPI would have returned
+        # if the model were still a route parameter. The phone needs to be able
+        # to tell "you signed it wrong" (401) from "the body is malformed"
+        # (422); collapsing both into one status is a debugging dead end.
+        #
+        # Without `include_input`, Pydantic echoes the offending value back —
+        # which is the raw bytes, so the response is both unserializable and a
+        # reflection of a bank SMS into an error body. Which field failed is
+        # the whole diagnostic; the value is already on the phone.
+        raise HTTPException(
+            422, exc.errors(include_url=False, include_input=False,
+                            include_context=False))
 
     received = payload.received_at
     if received.tzinfo is None:

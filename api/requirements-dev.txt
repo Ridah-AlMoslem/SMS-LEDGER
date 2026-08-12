@@ -1,0 +1,10 @@
+# Everything needed to run tests/run_all.py in full.
+#
+#   pip install -r api/requirements-dev.txt
+#
+# httpx2, not httpx: current Starlette's TestClient imports httpx2 and raises a
+# RuntimeError naming it if only httpx is present.
+
+-r requirements.txt
+
+httpx2>=0.28

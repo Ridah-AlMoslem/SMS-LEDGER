@@ -38,7 +38,25 @@ if (!url) {
   process.exit(1);
 }
 
-const sql = postgres(url, { max: 1, onnotice: (n) => console.log(`  notice: ${n.message}`) });
+// Fail fast instead of hanging. A db.<ref>.supabase.co host resolves to IPv6
+// only, so on an IPv4-only network the connection sits there until the OS
+// gives up — which looks like a broken script rather than a network problem.
+if (/db\.[a-z0-9]+\.supabase\.co/.test(url)) {
+  console.error(
+    "DIRECT_URL points at the IPv6-only direct connection.\n" +
+      "On an IPv4-only network this hangs rather than failing.\n\n" +
+      "Use the Session pooler instead — same host as DATABASE_URL, port 5432:\n" +
+      "  postgresql://postgres.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres\n\n" +
+      "Note the username is postgres.<ref>, not postgres.",
+  );
+  process.exit(1);
+}
+
+const sql = postgres(url, {
+  max: 1,
+  connect_timeout: 15,
+  onnotice: (n) => console.log(`  notice: ${n.message}`),
+});
 
 try {
   const text = fs.readFileSync(full, "utf8");

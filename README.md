@@ -86,12 +86,22 @@ vercel.json          Services routing
 Only **two values** are needed to run — both from Supabase → **Connect** → Connection string →
 URI. They differ only by port, and that port is load-bearing:
 
-| Variable | Port | Goes in | Why |
+| Variable | Supabase option | Port | Goes in |
 |---|---|---|---|
-| `DATABASE_URL` | **6543** | both files | Transaction pooler. Reuses connections aggressively, which is what serverless needs. Cannot run migrations. |
-| `DIRECT_URL` | **5432** | `web/.env.local` | Direct/session connection, full Postgres features. Migrations need this one. |
+| `DATABASE_URL` | **Transaction pooler** | 6543 | both files |
+| `DIRECT_URL` | **Session pooler** | 5432 | `web/.env.local` |
 
-Replace `[YOUR-PASSWORD]` in the string with your database password.
+Replace `[YOUR-PASSWORD]` in the string with your database password. Both strings use the same
+`pooler.supabase.com` host and the same `postgres.<project-ref>` username — only the port
+differs.
+
+> **Do not use the "Direct connection" option for `DIRECT_URL`.** Its host,
+> `db.<ref>.supabase.co`, resolves to **IPv6 only**. On an IPv4-only network — most home wifi,
+> and any phone tethering — `drizzle-kit` prints `Using 'postgres' driver` and then hangs
+> silently until the OS gives up. The Session pooler answers on IPv4 and still provides
+> session-mode semantics, so DDL, advisory locks and migrations all work. Both
+> `drizzle.config.ts` and `run-sql.mjs` now detect that host and fail with an explanation
+> rather than hanging.
 
 The remaining keys (`NEXT_PUBLIC_SUPABASE_URL`, publishable, secret) are for Supabase Auth at
 milestone 8. Nothing reads them yet — leave them blank. When you do fill them, use the new

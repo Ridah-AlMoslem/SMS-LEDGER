@@ -42,8 +42,19 @@ const url = process.env.DIRECT_URL ?? process.env.DATABASE_URL;
 
 if (!url) {
   throw new Error(
-    "DIRECT_URL is not set. Add the direct connection string (port 5432) to " +
+    "DIRECT_URL is not set. Add the Session pooler string (port 5432) to " +
       "web/.env.local — the pooled 6543 connection cannot run migrations.",
+  );
+}
+
+// Supabase's "Direct connection" host is IPv6-only. On an IPv4-only network
+// drizzle-kit hangs after "Using 'postgres' driver" with no error at all, which
+// is a genuinely difficult symptom to diagnose. Catch it here instead.
+if (/db\.[a-z0-9]+\.supabase\.co/.test(url)) {
+  throw new Error(
+    "DIRECT_URL uses the IPv6-only direct connection, which hangs on IPv4-only " +
+      "networks. Use the Session pooler: same host as DATABASE_URL, port 5432, " +
+      "username postgres.<project-ref>.",
   );
 }
 

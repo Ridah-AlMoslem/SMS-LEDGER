@@ -6,13 +6,13 @@
  * own models, so there is exactly one source of truth for the shape of the
  * data.
  *
- * Covers milestones 1–7 (SPEC §12). Budgets, goals, recurring series, loans
- * and rules are specced in §4 but not created here — they are milestones
- * 10–12 and nothing upstream depends on them.
+ * Covers milestones 1–12 (SPEC §12).
  */
 
+import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   date,
   index,
   integer,
@@ -111,6 +111,50 @@ export const incomeClass = pgEnum("income_class", ["earned", "passive", "other"]
 export const cardScheme = pgEnum("card_scheme", ["mada", "visa", "mastercard", "applepay"]);
 export const origin = pgEnum("origin", ["parsed", "manual"]);
 export const snapshotSource = pgEnum("snapshot_source", ["sms", "manual", "computed"]);
+
+export const recurringKind = pgEnum("recurring_kind", ["subscription", "bill", "salary", "profit"]);
+
+export const cadence = pgEnum("cadence", [
+  "weekly",
+  "biweekly",
+  "monthly",
+  "quarterly",
+  "yearly",
+]);
+
+export const seriesStatus = pgEnum("series_status", ["active", "paused", "cancelled"]);
+
+export const alertSeverity = pgEnum("alert_severity", ["info", "warning", "critical"]);
+
+/* --------------------------------------------------------------- settings */
+
+/**
+ * §5.5 — the period anchors, in one row.
+ *
+ * Both anchors are configurable but read from one place; the literals 25 and 0
+ * are never inlined at a call site. The SQL period functions in migration 0003
+ * do hardcode them, because an IMMUTABLE function may not read a table and an
+ * index on a non-immutable expression is rejected outright — so this row is
+ * the source of truth for everything above SQL, and `src/lib/settings.ts` is
+ * the only TypeScript module that names the values.
+ *
+ * Single row, enforced: `id` is fixed at 1 by a check constraint, so a second
+ * settings row is a database error rather than a silent second opinion about
+ * when the month starts.
+ */
+export const settings = pgTable(
+  "settings",
+  {
+    id: integer("id").primaryKey().default(1),
+    /** Day of month the salary cycle opens. 25 — every month has one. */
+    cycleAnchorDay: integer("cycle_anchor_day").notNull().default(25),
+    /** 0 = Sunday. Matches the Gulf work week; Postgres's own week is Monday. */
+    weekStartDow: integer("week_start_dow").notNull().default(0),
+    /** Every bucket boundary is evaluated in this zone, never UTC. */
+    timezone: text("timezone").notNull().default("Asia/Riyadh"),
+  },
+  (t) => [check("settings_single_row", sql`${t.id} = 1`)],
+);
 
 /* --------------------------------------------------------------- accounts */
 
@@ -250,6 +294,38 @@ export const counterparties = pgTable("counterparties", {
   isOwned: boolean("is_owned").notNull().default(false),
 });
 
+/* ------------------------------------------------------- recurring series */
+
+/**
+ * §11.3 — declared ahead of `transactions` only because the transaction row
+ * carries a foreign key back to it.
+ *
+ * `amount_avg` and `amount_last` are both kept because a profit series has no
+ * stable amount: §11.3 requires profit to be detected on *cadence only*, and
+ * amount-drift warnings suppressed for `kind = 'profit'`. Storing one blended
+ * figure would make that distinction impossible to draw later.
+ */
+export const recurringSeries = pgTable("recurring_series", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  merchantId: uuid("merchant_id").references(() => merchants.id),
+  accountId: uuid("account_id").references(() => accounts.id, { onDelete: "cascade" }),
+  kind: recurringKind("kind").notNull(),
+
+  amountAvg: numeric("amount_avg", { precision: 14, scale: 2 }),
+  amountLast: numeric("amount_last", { precision: 14, scale: 2 }),
+  dayOfMonth: integer("day_of_month"),
+  /** Weekly and biweekly matter: they only become visible at the week grain. */
+  cadence: cadence("cadence").notNull(),
+
+  nextExpectedAt: date("next_expected_at"),
+  firstSeen: timestamp("first_seen", { withTimezone: true }),
+  lastSeen: timestamp("last_seen", { withTimezone: true }),
+  occurrenceCount: integer("occurrence_count").notNull().default(0),
+
+  status: seriesStatus("status").notNull().default("active"),
+  confidence: numeric("confidence", { precision: 4, scale: 3 }),
+});
+
 /* ----------------------------------------------------------- transactions */
 
 export const transactions = pgTable(
@@ -282,6 +358,11 @@ export const transactions = pgTable(
     categoryId: uuid("category_id").references(() => categories.id),
     description: text("description"),
     notes: text("notes"),
+
+    /** §4 — links an occurrence back to the series that predicted it. */
+    recurringSeriesId: uuid("recurring_series_id").references(() => recurringSeries.id, {
+      onDelete: "set null",
+    }),
 
     transferGroupId: uuid("transfer_group_id"),
     counterpartyAccountId: uuid("counterparty_account_id"),
@@ -387,6 +468,113 @@ export const cardStatements = pgTable("card_statements", {
   dueDate: date("due_date"),
   paidAt: timestamp("paid_at", { withTimezone: true }),
 });
+
+/* ------------------------------------------------- budgets, goals, loans */
+
+/**
+ * §4, §11.2 — one amount per category per salary cycle, keyed by the 25th that
+ * opens it.
+ *
+ * `cycle_start` is a DATE that is always a 25th, never a calendar month: a
+ * `budgets.month` column would reintroduce `date_trunc('month')` through the
+ * back door and silently misattribute the last week of every cycle. The check
+ * constraint makes a non-25th insert fail loudly instead.
+ *
+ * There is deliberately no weekly budget column. §11.2 derives the weekly
+ * figure by day-weighting the cycle budget — storing it would let the two
+ * drift, and dividing by four understates the allowance by ~10% because a
+ * cycle averages 4.43 weeks.
+ */
+export const budgets = pgTable(
+  "budgets",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    categoryId: uuid("category_id")
+      .notNull()
+      .references(() => categories.id, { onDelete: "cascade" }),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    /** Underspend raises next cycle's allowance; overspend lowers it (§11.2). */
+    rollover: boolean("rollover").notNull().default(false),
+    cycleStart: date("cycle_start").notNull(),
+  },
+  (t) => [
+    unique("budgets_category_cycle").on(t.categoryId, t.cycleStart),
+    check("budgets_cycle_start_is_anchor", sql`EXTRACT(DAY FROM ${t.cycleStart}) = 25`),
+    index("budgets_cycle_idx").on(t.cycleStart),
+  ],
+);
+
+/** §11.2 — a virtual bucket over a real account. Progress reads the linked
+ *  account's actual balance, never a separate counter, so a withdrawal reduces
+ *  progress automatically and the number cannot drift from reality. */
+export const goals = pgTable("goals", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull(),
+  targetAmount: numeric("target_amount", { precision: 14, scale: 2 }).notNull(),
+  targetDate: date("target_date"),
+  linkedAccountId: uuid("linked_account_id").references(() => accounts.id, {
+    onDelete: "set null",
+  }),
+});
+
+/** §4 — amortization is computed from `apr` and `current_balance`, never
+ *  stored. Only the interest portion of a payment is an expense; the principal
+ *  moves net worth (§6). */
+export const loans = pgTable("loans", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull(),
+  lender: text("lender"),
+  principal: numeric("principal", { precision: 14, scale: 2 }).notNull(),
+  apr: numeric("apr", { precision: 6, scale: 4 }),
+  termMonths: integer("term_months"),
+  startDate: date("start_date"),
+  paymentAmount: numeric("payment_amount", { precision: 14, scale: 2 }),
+  paymentDay: integer("payment_day"),
+  currentBalance: numeric("current_balance", { precision: 14, scale: 2 }).notNull().default("0"),
+});
+
+/* ------------------------------------------------------- rules and alerts */
+
+/** §9.5 — first matching rule wins, in ascending priority. Not "apply all
+ *  matching rules": that makes outcomes depend on invisible interactions
+ *  between rules and is miserable to debug at 20+ rules. */
+export const rules = pgTable(
+  "rules",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    priority: integer("priority").notNull().default(100),
+    enabled: boolean("enabled").notNull().default(true),
+    name: text("name").notNull(),
+    /** [{field, operator, value}, ...] — ANDed. */
+    match: jsonb("match").notNull(),
+    /** {set_category, set_merchant, mark_internal_transfer,
+     *   exclude_from_analytics, set_account} */
+    actions: jsonb("actions").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("rules_priority_idx").on(t.enabled, t.priority)],
+);
+
+/**
+ * §11.6 — in-app alerts only in v1: a badge and a dashboard banner.
+ *
+ * `type` is text rather than an enum on purpose. The listed types (reconciliation
+ * drift, stale ingestion, budget overspend, missed salary, card due, …) are the
+ * ones known today, and adding the next one should not require a migration on a
+ * table whose whole job is to be written to by background jobs.
+ */
+export const alerts = pgTable(
+  "alerts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    type: text("type").notNull(),
+    severity: alertSeverity("severity").notNull().default("info"),
+    payload: jsonb("payload"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+  },
+  (t) => [index("alerts_open_idx").on(t.dismissedAt, t.createdAt)],
+);
 
 /** §3.3 — drift means a message was missed, double-counted, or misparsed.
  *  This is the feature that makes the dashboard trustworthy rather than

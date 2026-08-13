@@ -11,6 +11,11 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // Lets src/lib modules import each other as "./x.ts". Node's built-in type
+    // stripping — which is what scripts/verify-*.mjs use to test the real
+    // source rather than a parallel copy — requires the extension in the
+    // specifier, and will not rewrite ".js" to ".ts" the way a bundler does.
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "incremental": true,
     "plugins": [

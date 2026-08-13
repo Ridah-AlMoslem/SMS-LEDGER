@@ -15,6 +15,34 @@
       "when": 1786603457367,
       "tag": "0001_nosy_chamber",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786622936273,
+      "tag": "0002_free_preak",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786622944640,
+      "tag": "0003_period_functions",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786625222763,
+      "tag": "0004_lock_down_public_schema",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786625586994,
+      "tag": "0005_seed_categories",
+      "breakpoints": true
     }
   ]
 }

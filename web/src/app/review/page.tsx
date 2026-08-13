@@ -1,5 +1,4 @@
 import { desc, inArray, sql } from "drizzle-orm";
-import Link from "next/link";
 
 import { getDb, schema } from "@/db";
 import {
@@ -62,9 +61,18 @@ async function load() {
     .orderBy(desc(schema.rawMessages.receivedAt))
     .limit(200)) as ParkedMessage[];
 
+  // `lastReceived` is formatted to an explicit UTC ISO-8601 string rather than
+  // selected as a timestamptz. Drizzle only applies its column mappers to
+  // columns it knows; the result of a raw `sql` fragment is passed through as
+  // the driver produced it, and postgres-js hands back a string for an
+  // aggregate it cannot type. Declaring it `sql<Date>` did not make it one —
+  // it only moved the failure to runtime, where ingestionStale() called
+  // .getTime() on a string and took the whole page down.
   const [counts] = await db
     .select({
-      lastReceived: sql<Date | null>`max(${schema.rawMessages.receivedAt})`,
+      lastReceived: sql<
+        string | null
+      >`to_char(max(${schema.rawMessages.receivedAt}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
       pending: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'pending')::int`,
       parsed: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'parsed')::int`,
       ignored: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'ignored')::int`,
@@ -78,7 +86,16 @@ async function load() {
     .from(schema.accounts)
     .orderBy(schema.accounts.sortOrder);
 
-  return { parked, dismissed, accounts, health: counts as Health };
+  const health: Health = {
+    lastReceived: counts?.lastReceived ? new Date(counts.lastReceived) : null,
+    pending: Number(counts?.pending ?? 0),
+    parsed: Number(counts?.parsed ?? 0),
+    ignored: Number(counts?.ignored ?? 0),
+    needsReview: Number(counts?.needsReview ?? 0),
+    failed: Number(counts?.failed ?? 0),
+  };
+
+  return { parked, dismissed, accounts, health };
 }
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: "warn" }) {
@@ -186,7 +203,7 @@ export default async function ReviewPage() {
     data = await load();
   } catch (err) {
     return (
-      <main className="mx-auto w-full max-w-2xl p-6">
+      <main>
         <h1 className="text-xl font-semibold">Review</h1>
         <p className="mt-4 text-sm opacity-70">
           {err instanceof Error ? err.message : String(err)}
@@ -201,13 +218,8 @@ export default async function ReviewPage() {
   const stale = ingestionStale(data.health.lastReceived);
 
   return (
-    <main className="mx-auto w-full max-w-2xl p-6 pb-16">
-      <div className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">Review</h1>
-        <Link href="/" className="text-sm opacity-60 hover:opacity-100">
-          Ledger
-        </Link>
-      </div>
+    <main>
+      <h1 className="text-xl font-semibold">Review</h1>
 
       {/* §11.6 — the honest counterpart to a dashboard that claims to know your
           finances. If ingestion dies, this is where you find out. */}

@@ -25,7 +25,7 @@ first real message: [`DEPLOY.md`](DEPLOY.md).
 | Scheduling | **Supabase `pg_cron`** | Vercel Hobby caps cron at once daily. `pg_cron` is unrestricted and doubles as the keep-alive |
 | Charts | **Recharts** | |
 | Client data | **TanStack Query** | Cache + optimistic edits for the CRUD layer |
-| Auth | **Supabase Auth** (magic link), RLS on | Single user, but RLS from day one costs nothing |
+| Auth | **None yet** — RLS on, PostgREST revoked | Single user. The app connects as `postgres` server-side; `anon` and `authenticated` have no grants and every table has RLS enabled, so the public REST surface is closed (migration `0004`) |
 
 **LLM fallback is deferred past v1.** All 29 attested formats are templated. Unknown
 shapes park in the review queue, where hand-parsing one message derives a template and
@@ -152,14 +152,22 @@ python3 tests/run_all.py          # parser + persistence: 23 suites
 python3 tests/run_all.py --fast   # pure logic only, stdlib + Node, no install needed
 
 cd web
-npm run test:ui                   # accounts + review view logic
+npm run test:ui                   # period math, split invariant, accounts, review
+npm run test:periods              # SQL vs TypeScript vs Python, 5 years of dates
 npm run dev                       # web only
 vercel dev                        # both services, Vercel routing applied
 ```
 
-The app has two screens: `/` is the ledger — net worth, accounts grouped by bank, recent
-transactions — and `/review` is everything the parser could not handle, grouped by message
-shape so one fix clears a whole cluster.
+Four fixed tabs, in an order that never changes: **Home** (net worth, spend and income for the
+selected period), **Ledger** (every transaction in that period), **Plan** (budgets and goals —
+scaffolded; milestone 10), **Accounts** (balances by bank, and Settings). **Review** is a
+conditional fifth tab that appears only while the parser has parked something; when the queue
+drains its slot goes empty rather than being handed to anything else, and `/review` stays
+reachable from Settings.
+
+A global Week/Cycle toggle at the top drives every page. It lives in the URL
+(`?grain=week|cycle&period=<ISO date>`), so any view is linkable and the back button steps
+through periods; localStorage remembers only the grain.
 
 ## Testing
 
@@ -296,8 +304,8 @@ Full table in `SPEC.md` §12.
 
 | # | Milestone | State |
 |---|---|---|
-| 0 | Period functions | **Done** — verified over a multi-year range |
-| 1 | Schema + migrations | **Done** — 12 tables, applied and tested against real Postgres |
+| 0 | Period functions | **Done** — in SQL and TypeScript, cross-checked against the Python parser over 5 years |
+| 1 | Schema + migrations | **Done** — 19 tables, period functions, `v_categorized_amounts`, seeded categories, RLS |
 | 2 | Ingest endpoint | **Done** — HMAC, replay window, dedup, 202 on redelivery |
 | 3 | Normalization + classification | **Done** |
 | 4 | Template engine | **Done** — 28 templates, plus derivation and persistence |
@@ -325,4 +333,4 @@ What this does *not* yet do, in rough priority order:
 - **Code templates cannot be edited from the UI.** Derived templates live in `sms_templates`
   and are tried first, so a correction wins — but the 20 built-in ones still change only in
   `registry.py`.
-- **No transfer pairing, no rules engine, no categories.** Transactions land uncategorized.
+- **No transfer pairing and no rules engine.** The category tree is seeded (migration `0005`), but nothing assigns categories yet, so transactions land uncategorized.

@@ -30,11 +30,16 @@ from ledger.pipeline import body_hash, parse_message
 # Single-user private service: no docs, no schema endpoint, nothing to enumerate.
 app = FastAPI(title="sms-ledger", docs_url=None, redoc_url=None, openapi_url=None)
 
-INGEST_SECRET = os.environ.get("INGEST_SECRET", "")
-CRON_SECRET = os.environ.get("CRON_SECRET", "")
+# .strip() on every one of these. A secret piped into `vercel env add` or typed
+# into a dashboard field picks up a trailing newline with no visible trace, and
+# the only symptom is a 401 that is indistinguishable from a wrong value — on a
+# phone with no logs. Whitespace is never meaningful in a hex token, so there
+# is nothing to lose by removing it and a long evening to gain.
+INGEST_SECRET = os.environ.get("INGEST_SECRET", "").strip()
+CRON_SECRET = os.environ.get("CRON_SECRET", "").strip()
 # Shared with the web service so it can call the derive endpoint. Separate from
 # CRON_SECRET on purpose: different caller, different blast radius.
-INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "")
+INTERNAL_SECRET = os.environ.get("INTERNAL_SECRET", "").strip()
 MAX_SKEW_SECONDS = 300
 
 # Which account funds a card payment, and which holds cashback. Slugs, not

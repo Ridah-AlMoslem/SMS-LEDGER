@@ -170,6 +170,17 @@ def main_test():
                      headers={"Authorization": "Bearer wrong"})
     check("a wrong token is rejected", r7.status_code, 401)
 
+    # Whitespace around the token must not matter. A secret piped into
+    # `vercel env add` or pasted into a header field picks up a stray newline
+    # or space invisibly, and the resulting 401 is indistinguishable from a
+    # wrong value — from a phone, with no logs to check.
+    for label, header in [("trailing newline", f"Bearer {INGEST_SECRET}\n"),
+                          ("double space", f"Bearer  {INGEST_SECRET}"),
+                          ("trailing space", f"Bearer {INGEST_SECRET} ")]:
+        rw = client.post("/api/ingest", json=plain,
+                         headers={"Authorization": header})
+        check(f"tolerates a {label}", rw.status_code, 202)
+
     # The bearer branch must not become a way around signing. An unsigned
     # request with no Authorization header at all still has to fail.
     r8 = client.post("/api/ingest", json=plain)

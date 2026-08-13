@@ -50,6 +50,29 @@ class IngestPayload(BaseModel):
     device_id: str | None = None
 
 
+class SignedEnvelope(BaseModel):
+    """The phone's wire format: signature, timestamp and payload in one object.
+
+    Exists for one reason, and it is a UI constraint rather than a protocol
+    one. The Shortcuts JavaScript action returns exactly one text value, so
+    delivering a signature, a timestamp and a body as three separate HTTP
+    fields meant splitting that value and rebuilding it through seven more
+    actions — `Split Text`, three `Get Item from List`, three `Set Variable`.
+    Seven actions of plumbing, each a place to mis-tap, guarding nothing.
+
+    Folding them into one object moves that work here, where it is three lines
+    and cannot be mis-tapped.
+
+    `payload` is deliberately a STRING, not a nested object. The signature has
+    to cover the exact bytes the phone hashed, and a nested object would be
+    re-serialized by two JSON encoders before it reached the HMAC — which is
+    the canonicalization trap this design already removed once.
+    """
+    sig: str = Field(min_length=1, max_length=128)
+    ts: str = Field(min_length=1, max_length=32)
+    payload: str = Field(min_length=1, max_length=8000)
+
+
 def verify_signature(raw_body: bytes, signature: str, timestamp: str) -> None:
     """Reject anything unsigned, mis-signed, or replayed (SPEC §10.1).
 
@@ -85,14 +108,36 @@ async def ingest(
     x_signature: str = Header(default=""),
     x_timestamp: str = Header(default=""),
 ) -> dict:
-    # Signature first, parsing second. An unsigned request should never reach
-    # the JSON parser at all — that is unauthenticated attacker-controlled
-    # input, and validating it before authenticating it is backwards.
+    # Two accepted shapes, one rule: the HMAC always covers the exact bytes of
+    # the JSON that describes the message, never a re-serialization of it.
+    #
+    #   envelope  {"sig","ts","payload"}   — the phone. Signed over `payload`.
+    #   headers   X-Signature/X-Timestamp  — curl, tools/send.mjs, anything
+    #                                        that can set headers freely.
+    #
+    # Both are kept because the envelope exists to work around a Shortcuts
+    # limitation, and a limitation of one client is a poor reason to make
+    # every other caller carry the same workaround.
     raw = await request.body()
-    verify_signature(raw, x_signature, x_timestamp)
 
     try:
-        payload = IngestPayload.model_validate_json(raw)
+        envelope = SignedEnvelope.model_validate_json(raw)
+    except ValidationError:
+        envelope = None
+
+    if envelope is not None:
+        signed, signature, timestamp = (
+            envelope.payload.encode(), envelope.sig, envelope.ts)
+    else:
+        signed, signature, timestamp = raw, x_signature, x_timestamp
+
+    # Signature first, parsing second. An unsigned request should never reach
+    # the message parser at all — that is unauthenticated attacker-controlled
+    # input, and validating it before authenticating it is backwards.
+    verify_signature(signed, signature, timestamp)
+
+    try:
+        payload = IngestPayload.model_validate_json(signed)
     except ValidationError as exc:
         # 422 with the field errors, matching what FastAPI would have returned
         # if the model were still a route parameter. The phone needs to be able

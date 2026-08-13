@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "api"))
@@ -63,45 +64,38 @@ def check(name, got, want):
 DRIVER = """
 const s = require(process.argv[1]);
 const text = require('fs').readFileSync(0, 'utf8');
-process.stdout.write(s.buildRequest(text, process.argv[2], 'iphone', process.argv[3]));
+process.stdout.write(
+  s.buildRequest(text, process.argv[2], 'iphone', Number(process.argv[3])));
 """
 
 FIXTURES = [
-    ("plain ASCII",
-     "SAIB", "2026-08-12T14:04:00+03:00", "test"),
+    ("plain ASCII", "SAIB", "test"),
 
-    ("Arabic with newlines",
-     "SAIB",
-     "2026-08-12T14:04:00+03:00",
+    ("Arabic with newlines", "SAIB",
      "شراء\nمبلغ: SAR 113.00\n"
      "لدى: TAMIMI MARKETS\nبطاقة:*5842"),
 
-    ("bidi control characters",
-     "STC Bank",
-     "2026-08-12T00:30:00+03:00",
+    ("bidi control characters", "STC Bank",
      "‏حوالة صادرة‎\n"
      "الى: محمد\nالى: 318"),
 
-    ("surrogate pair",
-     "barq app", "2026-08-12T14:04:00+03:00", "\U0001f4b0 cashback"),
+    ("surrogate pair", "barq app", "\U0001f4b0 cashback"),
 
-    ("quotes and backslashes",
-     "AlRajhiBank", "2026-08-12T14:04:00+03:00",
-     'merchant "ACME\\CO" ريال'),
+    ("quotes and backslashes", "AlRajhiBank", 'merchant "ACME\\CO" ريال'),
 
-    ("crosses the SHA-256 block boundary",
-     "SAIB", "2026-08-12T14:04:00+03:00",
-     "راتب " * 60),
+    ("crosses the SHA-256 block boundary", "SAIB", "راتب " * 60),
 
-    ("body ending in a newline",
-     "SAIB", "2026-08-12T14:04:00+03:00", "شراء\n"),
+    ("body ending in a newline", "SAIB", "شراء\n"),
+
+    ("body containing a blank line", "SAIB", "شراء\n\nمبلغ: SAR 5.00"),
 ]
 
 
-def sign(sender, received_at, body, ts):
-    text = f"{sender}\n{received_at}\n{body}"
+def sign(sender, body, now_ms):
+    """Run the real signer file under Node and return its single output value."""
+    text = f"{sender}\n{body}"
     proc = subprocess.run(
-        ["node", "-e", DRIVER, SIGNER, SECRET, ts],
+        ["node", "-e", DRIVER, SIGNER, SECRET, str(now_ms)],
         input=text.encode(), capture_output=True)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.decode())
@@ -120,19 +114,25 @@ def main_test():
                   "\n        verify_endpoints.py covers it in the"
                   " persistence tier."))
 
-    ts = str(int(time.time()))
+    now_ms = int(time.time() * 1000)
 
     print("\n[1] THE JS SIGNATURE MATCHES PYTHON'S, BYTE FOR BYTE")
-    for name, sender, received_at, body in FIXTURES:
-        out = sign(sender, received_at, body, ts)
-        lines = out.split("\n")
-        check(f"{name}: output is exactly three lines", len(lines), 3)
+    for name, sender, body in FIXTURES:
+        out = sign(sender, body, now_ms)
 
-        sig, got_ts, payload = lines[0], lines[1], lines[2]
-        raw = payload.encode()
+        # One value, and it must stay one: the phone posts this verbatim as
+        # the request body. A stray newline would mean the shortcut needs
+        # splitting again, which is the whole thing this format removed.
+        check(f"{name}: output is a single line", "\n" in out, False)
 
+        env = json.loads(out)
+        check(f"{name}: envelope has exactly sig, ts, payload",
+              sorted(env), ["payload", "sig", "ts"])
+
+        raw = env["payload"].encode()
         check(f"{name}: digest matches",
-              sig, hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest())
+              env["sig"],
+              hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest())
 
         # The body the phone built has to survive being read back. Checked
         # with stdlib json rather than the Pydantic model so this holds on a
@@ -140,28 +140,50 @@ def main_test():
         parsed = json.loads(raw)
         check(f"{name}: body survives the round trip", parsed["body"], body)
         check(f"{name}: sender survives the round trip", parsed["sender"], sender)
-        check(f"{name}: received_at survives the round trip",
-              parsed["received_at"], received_at)
 
         if server is not None:
             try:
-                server.verify_signature(raw, sig, got_ts)
+                server.verify_signature(raw, env["sig"], env["ts"])
                 verified = True
             except Exception as exc:  # noqa: BLE001
                 verified = f"{type(exc).__name__}: {exc}"
             check(f"{name}: the server accepts it", verified, True)
 
-    print("\n[2] A TAMPERED BODY IS REJECTED")
-    out = sign("SAIB", "2026-08-12T14:04:00+03:00", "شراء 100", ts)
-    sig, got_ts, payload = out.split("\n")
-    tampered = json.loads(payload)
+    print("\n[2] THE GENERATED TIMESTAMP IS RIYADH TIME, NOT UTC")
+    # Fixed instant: 2026-08-12T00:30:00Z is 03:30 on the 12th in Riyadh.
+    # Getting this wrong files a 00:30 payday into the previous salary cycle.
+    out = sign("SAIB", "شراء", 1786580000000)
+    received = json.loads(json.loads(out)["payload"])["received_at"]
+    check("carries the +03:00 offset", received.endswith("+03:00"), True)
+    check("shifted three hours ahead of UTC",
+          received[:19],
+          datetime.fromtimestamp(1786580000, tz=timezone.utc)
+          .astimezone(timezone(timedelta(hours=3)))
+          .strftime("%Y-%m-%dT%H:%M:%S"))
+
+    print("\n[3] A TAMPERED BODY IS REJECTED")
+    env = json.loads(sign("SAIB", "شراء 100", now_ms))
+    tampered = json.loads(env["payload"])
     tampered["body"] = tampered["body"].replace("100", "900")
     raw = json.dumps(tampered, ensure_ascii=False, separators=(",", ":")).encode()
 
     check("editing the amount invalidates the signature",
           hmac.compare_digest(
-              sig, hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest()),
+              env["sig"],
+              hmac.new(SECRET.encode(), raw, hashlib.sha256).hexdigest()),
           False)
+
+    print("\n[4] A ONE-LINE INPUT IS REFUSED, NOT GUESSED")
+    # A mis-built Text action must not post a message whose sender is the
+    # entire SMS — that would sail through as an unknown sender and park.
+    # Fed straight to the driver rather than through sign(), which joins with
+    # a newline and so could never produce this case.
+    proc = subprocess.run(
+        ["node", "-e", DRIVER, SIGNER, SECRET, str(now_ms)],
+        input=b"no-newline-anywhere", capture_output=True)
+    check("input without a newline throws", proc.returncode != 0, True)
+    check("and names the problem",
+          "expected two lines" in proc.stderr.decode(), True)
 
     print()
     if all(checks):

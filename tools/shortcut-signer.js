@@ -7,19 +7,31 @@
  *
  * WHY THIS EXISTS AT ALL
  * Shortcuts has no HMAC action, and its JSON serializer is not something you
- * can inspect or pin. Since /api/ingest signs the literal request body, the
- * body and its signature have to be produced by the same piece of code, from
- * the same string, in one step. Building the JSON in Shortcuts and signing it
- * here would leave two serializers to disagree, which is the failure this
- * whole arrangement is designed to remove.
+ * can inspect or pin. Since /api/ingest signs the literal bytes of the body,
+ * the body and its signature have to be produced by the same piece of code,
+ * from the same string, in one step. Building the JSON in Shortcuts and
+ * signing it here would leave two serializers to disagree, which is the
+ * failure this whole arrangement is designed to remove.
  *
- * INPUT  three lines: sender, ISO-8601 received_at, then the message body.
- *        The body is everything after the second newline, so its own line
+ * INPUT  two lines: the sender, then the message body.
+ *        The body is everything after the first newline, so its own line
  *        breaks — every bank message has several — need no escaping.
  *
- * OUTPUT three lines: signature, unix timestamp, JSON body.
- *        The JSON is single-line because JSON.stringify escapes newlines,
- *        so "Split Text by New Lines" always yields exactly three items.
+ * OUTPUT one line: {"sig","ts","payload"}.
+ *
+ *        One value, not three, because the Shortcuts action returns exactly
+ *        one — and pulling three out of it cost `Split Text`, three
+ *        `Get Item from List` and three `Set Variable` actions on the phone.
+ *        Seven actions of plumbing, every one a place to mis-tap. The server
+ *        unwraps this in three lines instead.
+ *
+ *        `payload` is a STRING inside the JSON, not a nested object, so the
+ *        bytes signed here are the bytes verified there with nothing
+ *        re-encoding them in between.
+ *
+ * The timestamp and received_at are generated here rather than passed in,
+ * which removes a `Format Date` action too — and removes the most common way
+ * to get a 422, which was leaving "Include Time" switched off.
  *
  * Verified byte-for-byte against the Python server in
  * tests/verify_shortcut_signer.py. Change either side and run it.
@@ -151,26 +163,48 @@ function hmacSha256Hex(keyStr, msgStr) {
 
 // --- build and sign --------------------------------------------------------
 
-function buildRequest(text, secret, deviceId, nowSeconds) {
-  var nl1 = text.indexOf("\n");
-  var rest = text.slice(nl1 + 1);
-  var nl2 = rest.indexOf("\n");
+/*
+ * Riyadh wall-clock with its offset, which is what the bank prints and what
+ * the date rules expect. Computed by shifting the instant and labelling it,
+ * rather than with toLocaleString: JavaScriptCore in Shortcuts cannot be
+ * relied on to carry a full time-zone database, and a silently wrong offset
+ * is worse than no offset. Saudi Arabia has never observed daylight saving,
+ * so +03:00 is not an approximation — it is the offset, permanently.
+ *
+ * Sending UTC would also be defensible, but a 00:30 transaction would then
+ * read as the previous day, and on a payday that is the previous salary
+ * cycle (§10.4.1).
+ */
+function riyadhIso(nowMs) {
+  return new Date(nowMs + 3 * 3600 * 1000).toISOString().slice(0, 19) + "+03:00";
+}
 
-  var sender = text.slice(0, nl1).trim();
-  var receivedAt = rest.slice(0, nl2).trim();
-  var body = rest.slice(nl2 + 1);
+function buildRequest(text, secret, deviceId, nowMs) {
+  var nl = text.indexOf("\n");
+
+  // No newline at all means the Text action was mis-built — one line cannot
+  // carry both a sender and a body. Failing loudly here beats posting a
+  // message whose sender is the whole SMS.
+  if (nl < 0) throw new Error("expected two lines: sender, then body");
+
+  var sender = text.slice(0, nl).trim();
+  var body = text.slice(nl + 1);
 
   // Key order is irrelevant to the server now that it verifies the bytes it
-  // received, but stay stable anyway: a signature that changes when nothing
+  // was given, but stay stable anyway: a signature that changes when nothing
   // changed makes every future comparison against the Python side useless.
   var payload = JSON.stringify({
     sender: sender,
     body: body,
-    received_at: receivedAt,
+    received_at: riyadhIso(nowMs),
     device_id: deviceId,
   });
 
-  return hmacSha256Hex(secret, payload) + "\n" + nowSeconds + "\n" + payload;
+  return JSON.stringify({
+    sig: hmacSha256Hex(secret, payload),
+    ts: String(Math.floor(nowMs / 1000)),
+    payload: payload,
+  });
 }
 
 // Exported for the verification harness; ignored by JavaScriptCore, which has
@@ -185,4 +219,4 @@ if (typeof module !== "undefined") {
 // If Actions ever reports "Unexpected token" here, wrap it in `return`.
 typeof $text === "undefined"
   ? ""
-  : buildRequest($text, SECRET, DEVICE_ID, Math.floor(Date.now() / 1000));
+  : buildRequest($text, SECRET, DEVICE_ID, Date.now());

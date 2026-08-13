@@ -152,16 +152,31 @@ def record_outcome(conn, message_id, result, slug_to_id) -> int:
     thing that only shows up in a reconciliation drift weeks later.
     """
     if result.status != "parsed":
+        # OTP bodies are the one documented exception to raw_messages being
+        # immutable (§8, §10.1): the row survives, the passcode does not.
+        #
+        # Redacted here, on the tick, rather than by a 24-hour sweep. The tick
+        # runs every minute, so a live passcode sits in the database for about
+        # a minute instead of a day — and a sweep is one more moving part that
+        # fails silently when it stops running. The phone no longer filters
+        # OTPs, so this is the only thing standing between a one-time passcode
+        # and permanent storage.
+        #
+        # body_hash is computed at ingest from what arrived, so redelivery of
+        # the same OTP still dedups against this row rather than inserting a
+        # fresh unredacted copy.
+        redact = result.ignored_reason == "otp"
         conn.execute(
             """
             UPDATE raw_messages
             SET status = %s, ignored_reason = %s, template_id = NULL,
                 shape_hash = %s, language = %s::language,
-                last_error = %s, processed_at = now()
+                last_error = %s, processed_at = now(),
+                body = CASE WHEN %s THEN '[redacted: otp]' ELSE body END
             WHERE id = %s
             """,
             (result.status, result.ignored_reason, result.shape,
-             _language(result.language), result.error, message_id),
+             _language(result.language), result.error, redact, message_id),
         )
         return 0
 

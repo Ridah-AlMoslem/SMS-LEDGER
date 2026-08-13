@@ -315,8 +315,9 @@ in Vault and on Vercel disagree.
 
 ## 4. Build the Shortcut
 
-Install **[Actions](https://apps.apple.com/app/id1586435171)** first — free,
-and it supplies the three things Shortcuts is missing. Restart the phone if the
+Install **[Actions](https://apps.apple.com/app/id1586435171)** first — free. It
+supplies the two things Shortcuts lacks: a way to run JavaScript, and a
+keychain to keep the secret out of the shortcut body. Restart the phone if the
 actions do not appear; that is a known iOS bug, not a bad install.
 
 Shortcuts has no HMAC action, and its JSON serializer is not something you can
@@ -329,51 +330,112 @@ a phone with no logs.
 `sms-ledger-secret`. Anything pasted into the shortcut body is readable by
 anyone who opens it or receives a copy.
 
-**Automation:** Automations tab → **Message** → add your banks' sender IDs →
-**Run Immediately**, notifications off.
+**The Sender field cannot be used.** It only accepts entries from Contacts, and
+a bank's alphanumeric sender ID (`AlRajhiBank`, `SAIB`) cannot be made into a
+contact — there is no phone number to give it. Apple's
+[communication triggers](https://support.apple.com/guide/shortcuts/communication-triggers-apdd711f9dff/ios)
+documents only two options, Sender and Message Contains, and states that when
+several criteria are set, *all* must match. So the trigger is Message Contains
+alone, with Sender left empty.
+
+**Which phrase.** Measured over the attested corpus: no single token covers the
+ledger messages — `SAR` and `مبلغ` reach 67% each. The four currency spellings
+together reach 100%, because stating an amount in riyals is the one thing every
+ledger message does:
+
+```
+SAR      ر.س      SR      ريال
+```
+
+Create one Message automation per phrase, **Run Immediately**, notifications
+off. Overlapping filters are harmless: a message matching two fires twice, and
+the second POST returns `202 duplicate` on `body_hash`. That dedup exists for
+the phone's retry behaviour and covers this case for free.
+
+**Build the logic once.** Four copies of the signer would drift. Put the
+actions below in a normal shortcut named `Ledger Ingest` that accepts Text, and
+make each automation two actions: a **Text** action with the two lines, then
+**Run Shortcut** → `Ledger Ingest` with that text as input.
 
 **The actions, in order:**
 
-1. **Keychain** — read `sms-ledger-secret`.
-2. **Format Date** — Current Date, **ISO 8601**, *include time on*. A
-   date-only value is the most likely cause of a 422.
-3. **Text** — exactly three lines, no labels, no extra blanks:
+1. **Keychain** — Get `sms-ledger-secret`.
+2. **Text** — exactly two lines, no labels, no blanks:
 
    ```
    [Sender]
-   [Formatted Date]
    [Content]
    ```
 
-   Sender and the date never contain newlines, so the body is unambiguously
-   everything after the second one — which is why the message's own line
+   The sender never contains a newline, so the body is unambiguously
+   everything after the first one — which is why the message's own line
    breaks need no escaping.
-4. **Transform Text with JavaScript** — input is the Text above; paste
-   `tools/shortcut-signer.js`. Replace `PASTE_INGEST_SECRET_HERE` with the
-   Keychain variable.
-5. **Split Text** by **New Lines** → 1 = signature, 2 = timestamp, 3 = body.
-6. **Get Contents of URL (Extended)** — `POST` to
-   `https://<project>.vercel.app/api/ingest`
-   - Headers: `X-Signature` = item 1, `X-Timestamp` = item 2,
-     `Content-Type` = `application/json`
-   - Request body: **raw text / file**, set to item 3
-7. **If** status code ≠ 202 → **Show Notification** with the status.
 
-Four details that each cost an evening:
+   **`Sender` is a property of `Shortcut Input`, not a variable of its own.**
+   The variable picker offers only `Shortcut Input`, which looks like the
+   sender is unavailable and is the point at which this design appears to fail.
+   It is not. Insert `Shortcut Input`, then *tap the inserted chip* — a panel
+   appears with `Type:` and the choices **Message, Content, Recipients,
+   Sender**. Line 1 is `Shortcut Input` with Type `Sender`; line 2 is the same
+   variable with Type `Content`.
+3. **Transform Text with JavaScript** — Text: the action above. Code: paste
+   `tools/shortcut-signer.js`, replacing `PASTE_INGEST_SECRET_HERE` with the
+   Keychain variable from step 1.
+4. **Get Contents of URL** — the built-in is fine here.
+   - `POST` to `https://<project>.vercel.app/api/ingest`
+   - One header: `Content-Type` = `application/json`
+   - Request Body: **File**, set to the output of step 3
+5. **If** `Contents of URL` **does not contain** `body_hash` →
+   **Show Notification**.
 
-- **Use the raw-text body, never Shortcuts' JSON dictionary builder.** The
-  builder re-serializes, the bytes stop matching the signature, and you get a
-  401 that looks exactly like a wrong secret.
-- **Use "Get Contents of URL (Extended)", not the built-in.** The built-in
-  returns only the response body, so a 401 is indistinguishable from success
-  and the automation fails silently forever.
-- **Step 7 is not optional.** iOS message automations fail quietly — phone
-  off, an iOS update disabling the automation, a dropped network. Without a
+### Why it is only five actions
+
+An earlier version of this ran to thirteen, and seven of those were plumbing
+rather than logic. The Shortcuts JavaScript action returns exactly **one** text
+value, so delivering a signature, a timestamp and a body as three separate HTTP
+fields meant `Split Text`, three `Get Item from List` and three `Set Variable`
+actions to pull them apart again — seven taps' worth of ceremony guarding
+nothing, each one a place to wire the wrong item number.
+
+The signer now returns a single envelope, `{"sig","ts","payload"}`, and the
+server unwraps it in three lines. The signature still covers the exact bytes of
+`payload`, so nothing about the security changed: `payload` is carried as a
+JSON *string*, not a nested object, precisely so no second encoder can touch
+the bytes between signing and verifying.
+
+Two more actions went the same way. The JavaScript generates `received_at`
+itself, in Riyadh time with a fixed `+03:00` — Saudi Arabia has never observed
+daylight saving — which removes `Format Date` and removes the commonest cause
+of a 422, which was leaving *Include Time* switched off. And the OTP filter
+moved entirely to the server (see below), removing `Match Text`, an `If` and a
+`Stop`.
+
+### Three details that each cost an evening
+
+- **Request Body must be `File`, never Shortcuts' JSON dictionary builder.**
+  The builder re-serializes, the bytes stop matching the signature, and you get
+  a 401 that looks exactly like a wrong secret.
+- **Test the response body, not a status code.** The built-in Get Contents of
+  URL returns the *body*; it has no status-code output at all, so a check like
+  `is not 202` is true even when the request succeeded, and the notification
+  fires on every message until you stop believing it. Both success responses —
+  `accepted` and `duplicate` — contain `body_hash`; a 401 and a 422 do not.
+- **Step 5 is not optional.** iOS message automations fail quietly: phone off,
+  an iOS update disabling the automation, a dropped network. Without a
   notification the first symptom is a gap in the ledger you notice weeks later.
-- **OTP filter.** The Message trigger can only include senders, not exclude.
-  Add an **If** on Content contains `رمز التحقق` → stop. The server discards
-  OTPs anyway, but §7.1 calls an OTP reaching the ledger the most expensive
-  misclassification in the system, so filter on both sides.
+
+### OTPs are filtered on the server only
+
+Content triggers include rather than exclude, and bank OTPs quote amounts, so
+`SAR` pulls them in and no phone-side filter can be exact. They are handled at
+the tick instead: classified `otp`, never posted, and the body overwritten with
+`[redacted: otp]` in the same transaction.
+
+That redaction is the one sanctioned exception to `raw_messages` being
+immutable (§8) — the row survives so dedup and history stay intact, the
+passcode does not. It runs on the tick rather than as a 24-hour sweep, so a
+live passcode exists in the database for about a minute, and there is no
+scheduled job to notice has stopped running.
 
 ---
 

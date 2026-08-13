@@ -211,6 +211,19 @@ field order, separator spacing, datetime format, unicode escaping — and every 
 invisible from a phone whose only symptom is a bare 401. It also turns adding a model field
 into a silent breaking change for a client that cannot be redeployed alongside it.
 
+The phone posts a `{sig, ts, payload}` envelope where `payload` is a JSON **string**, and the
+HMAC covers that string's bytes. It is a string rather than a nested object for exactly the
+reason above: nesting would let two encoders touch the bytes between signing and verifying.
+The envelope exists because the Shortcuts JavaScript action returns one value, and splitting
+it back into three cost seven actions on the phone — plumbing that guarded nothing. Callers
+that can set headers freely still use `X-Signature` / `X-Timestamp`; one client's UI limit is
+a poor reason to make every caller carry the workaround.
+
+**OTP bodies are redacted on the tick.** The only sanctioned exception to `raw_messages` being
+immutable (§8, §10.1): the row survives so dedup and history hold, the passcode does not. On
+the tick rather than a nightly sweep, so a live passcode exists for about a minute — and so
+there is no scheduled job that can silently stop running.
+
 **Never compare masked account strings literally.** One sender writes the same account as
 `XXXX7001`, `XXX7001`, `X7001`, and `0000xx17001`. Resolution is by suffix, scoped to the
 institution.

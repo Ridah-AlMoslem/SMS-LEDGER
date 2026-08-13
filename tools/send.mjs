@@ -53,31 +53,22 @@ if (!body.trim()) {
   process.exit(1);
 }
 
-// Riyadh wall-clock with its offset, which is what the phone sends and what
-// the date rules expect. A bare UTC timestamp files a 00:30 transaction into
-// the previous day, and on payday that means the previous salary cycle.
-const receivedAt = new Date()
-  .toLocaleString("sv-SE", { timeZone: "Asia/Riyadh" })
-  .replace(" ", "T") + "+03:00";
-
-const out = signer.buildRequest(
-  `${sender}\n${receivedAt}\n${body}`,
+// Posted exactly as the phone posts it: the signer's single output value IS
+// the request body. Sending it any other way would test a code path the phone
+// never takes, which is the opposite of what this script is for.
+const envelope = signer.buildRequest(
+  `${sender}\n${body}`,
   secret,
   "cli",
-  Math.floor(Date.now() / 1000).toString(),
+  Date.now(),
 );
-const [signature, timestamp, payload] = out.split("\n");
 
 let res;
 try {
   res = await fetch(`${base}/api/ingest`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Signature": signature,
-      "X-Timestamp": timestamp,
-    },
-    body: payload,
+    headers: { "Content-Type": "application/json" },
+    body: envelope,
   });
 } catch (err) {
   // "Couldn't reach it" and "it said no" are different problems, and an

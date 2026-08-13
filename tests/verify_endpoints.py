@@ -133,6 +133,30 @@ def main_test():
         "X-Signature": hmac.new(INGEST_SECRET.encode(), odd, hashlib.sha256).hexdigest(),
         "X-Timestamp": str(int(time.time()))})
     check("signature covers literal bytes, not a canonical form", r3.status_code, 202)
+
+    # The envelope form the phone uses. Same message, so it must dedup against
+    # the row above rather than create a second one — the two wire formats
+    # have to be the same request, not two requests that look alike.
+    inner = json.dumps(
+        {"sender": SALARY[0], "body": SALARY[1], "received_at": when.isoformat()},
+        ensure_ascii=False, separators=(",", ":"))
+    env = json.dumps({
+        "sig": hmac.new(INGEST_SECRET.encode(), inner.encode(),
+                        hashlib.sha256).hexdigest(),
+        "ts": str(int(time.time())),
+        "payload": inner,
+    }).encode()
+    r4 = client.post("/api/ingest", content=env,
+                     headers={"Content-Type": "application/json"})
+    check("envelope form is accepted", r4.status_code, 202)
+    check("and dedups against the header form", r4.json()["status"], "duplicate")
+
+    bad = json.loads(env)
+    bad["sig"] = "0" * 64
+    r5 = client.post("/api/ingest", content=json.dumps(bad).encode(),
+                     headers={"Content-Type": "application/json"})
+    check("a mis-signed envelope is rejected", r5.status_code, 401)
+
     check("only one raw row", _count("raw_messages"), 1)
     check("ingest never parses", _count("transactions"), 0)
 
@@ -152,11 +176,22 @@ def main_test():
     check("nothing left to claim", r.json()["claimed"], 0)
     check("still exactly one transaction", _count("transactions"), 1)
 
-    print("\n[5] OTP THROUGH THE FULL STACK  (§7.1)")
+    print("\n[5] OTP THROUGH THE FULL STACK  (§7.1, §10.1)")
     signed(client, *OTP, datetime(2026, 7, 8, 21, 38, tzinfo=UTC))
     r = client.post("/api/parse-tick", headers={"X-Cron-Secret": CRON_SECRET})
     check("OTP was ignored, not parsed", r.json()["ignored"], 1)
     check("OTP added no transaction", _count("transactions"), 1)
+
+    # The phone no longer filters OTPs, so the tick is the only thing keeping
+    # passcodes out of storage. The row must survive; the passcode must not.
+    with store.connect(DSN) as conn:
+        row = conn.execute(
+            "SELECT body, status, ignored_reason FROM raw_messages "
+            "WHERE ignored_reason = 'otp'").fetchone()
+    check("the OTP row still exists", row is not None, True)
+    check("but the passcode is gone", row["body"], "[redacted: otp]")
+    check("and the original digits are nowhere in it",
+          any(ch.isdigit() for ch in row["body"]), False)
 
     print("\n[6] DERIVE ENDPOINT IS GUARDED  (§10.7)")
     body = "سحب نقدي\nالمبلغ 45.50 SAR\nالرصيد 158.51\nالصراف TAMIMI ATM\n2026-08-09 14:22"

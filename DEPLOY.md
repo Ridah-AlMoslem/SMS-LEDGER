@@ -391,11 +391,24 @@ signed path from a terminal.
 ### Two things worth adding
 
 - **Failure is silent by default.** iOS message automations fail quietly:
-  phone off, an iOS update disabling the automation, a dropped network. If you
-  want a signal, add **If** `Contents of URL` **does not contain** `body_hash`
-  → **Show Notification**. Both success responses contain `body_hash`; a 401
-  and a 422 do not. Test the *body*, not a status code — the built-in URL
-  action has no status-code output at all.
+  phone off, an iOS update disabling the automation, a dropped network. Add
+  **If** `Contents of URL` **does not contain** `body_hash` → **Show
+  Notification** with `Contents of URL` as the body. Both success responses
+  contain `body_hash`; no failure does. Test the *body*, not a status code —
+  the built-in URL action has no status-code output at all, and the body is
+  the better diagnostic anyway:
+
+  | Notification | Meaning |
+  |---|---|
+  | *(silence)* | `accepted` or `duplicate` |
+  | `{"detail":"bad token"}` | Authorization value wrong |
+  | `{"detail":"no bearer token and no signature"}` | header missing or misnamed |
+  | `{"detail":[{"loc":["body","sender"]…}]}` | JSON field wrong or empty |
+  | `{"detail":"INGEST_SECRET is not configured"}` | env var missing on Vercel |
+
+  While it beds in, drop the `If` and notify on every message: seeing
+  `accepted` arrive proves the pipeline is alive, where silence only proves it
+  is not complaining.
 - **`/review` flags ingestion stale after 24 hours** with no message, which
   catches a dead automation even without the notification — but only if you
   look at the page.

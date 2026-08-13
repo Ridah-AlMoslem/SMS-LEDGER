@@ -185,6 +185,10 @@ def main_test():
     # request with no Authorization header at all still has to fail.
     r8 = client.post("/api/ingest", json=plain)
     check("no token and no signature is still 401", r8.status_code, 401)
+    # The phone shows this text in a notification, so it has to name the real
+    # fault. "bad timestamp" for a missing header sends you to check clocks.
+    check("and says which credential is missing",
+          r8.json()["detail"], "no bearer token and no signature")
 
     check("only one raw row", _count("raw_messages"), 1)
 

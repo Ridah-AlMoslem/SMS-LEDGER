@@ -100,6 +100,15 @@ def verify_signature(raw_body: bytes, signature: str, timestamp: str) -> None:
     if not INGEST_SECRET:
         raise HTTPException(500, "INGEST_SECRET is not configured")
 
+    # Checked before the timestamp so that a request carrying no credentials
+    # at all says so. Falling through to the timestamp check reported "bad
+    # timestamp" for a missing Authorization header — a message that sends you
+    # to look at clock skew when the real problem is a header you forgot. This
+    # string is what the phone's notification will show, so it has to name the
+    # actual fault.
+    if not signature:
+        raise HTTPException(401, "no bearer token and no signature")
+
     try:
         age = abs(time.time() - int(timestamp))
     except (TypeError, ValueError):

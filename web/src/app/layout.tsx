@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 /**
@@ -14,6 +14,16 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Ledger",
   description: "Personal financial ledger built from bank SMS",
+  applicationName: "Ledger",
+};
+
+/**
+ * Both theme colors are the same near-black. The tab strip and the iOS status
+ * bar should match the dark surface the icon tile sits on, and the app's light
+ * mode is a plain white page that browsers already handle correctly.
+ */
+export const viewport: Viewport = {
+  themeColor: "#0a0a0a",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

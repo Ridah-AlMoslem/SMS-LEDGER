@@ -211,13 +211,23 @@ field order, separator spacing, datetime format, unicode escaping — and every 
 invisible from a phone whose only symptom is a bare 401. It also turns adding a model field
 into a silent breaking change for a client that cannot be redeployed alongside it.
 
-The phone posts a `{sig, ts, payload}` envelope where `payload` is a JSON **string**, and the
-HMAC covers that string's bytes. It is a string rather than a nested object for exactly the
-reason above: nesting would let two encoders touch the bytes between signing and verifying.
-The envelope exists because the Shortcuts JavaScript action returns one value, and splitting
-it back into three cost seven actions on the phone — plumbing that guarded nothing. Callers
-that can set headers freely still use `X-Signature` / `X-Timestamp`; one client's UI limit is
-a poor reason to make every caller carry the workaround.
+**The phone authenticates with a bearer token, not a signature — deliberately.** The threat
+is someone guessing the ingest URL and injecting fabricated transactions, and a 256-bit token
+over TLS closes that as completely as an HMAC does. Replay is already inert because ingest
+dedups on `body_hash`, and TLS supplies the integrity a signature would. The one real
+difference is that the token travels on every request instead of never leaving the device.
+
+What it buys is a Shortcut that is **one action** instead of thirteen. Every one of the other
+twelve existed to serve the signature: a third-party app for JavaScript, a hand-rolled
+SHA-256, a keychain lookup, a text assembly step, and then `Split Text` plus six more actions
+to pull the signer's single return value back apart. That is a lot of surface for a threat
+the token already closes, on a client with no logs where the only symptom is a bare 401.
+
+Both signed forms remain — `X-Signature`/`X-Timestamp` over the body, and a
+`{sig, ts, payload}` envelope where the HMAC covers the `payload` string's bytes (a string,
+not a nested object, so no second encoder touches them in between). They are tested, and
+`tools/send.mjs --hmac` exercises them, so reverting is a phone-side change with no server
+work. An upgrade path that isn't exercised isn't a path.
 
 **OTP bodies are redacted on the tick.** The only sanctioned exception to `raw_messages` being
 immutable (§8, §10.1): the row survives so dedup and history hold, the passcode does not. On
@@ -305,9 +315,11 @@ leave a permanent invisible skew.
 
 What this does *not* yet do, in rough priority order:
 
-- **Top-up linking does not run on the DB path.** `link_topups` is a cross-transaction pass
-  that exists only in the in-memory pipeline, so a wallet top-up and the spend it funds both
-  count. The simulation measures this at +320 phantom expense over two months.
+- ~~**Top-up linking does not run on the DB path.**~~ Fixed. `db.link_topups` runs on every
+  tick and delegates to the same `ledger.topup.link_topups` the in-memory pipeline uses, so
+  there is one pairing rule rather than two. It re-scans the recent window instead of only the
+  legs just claimed, because the two halves come from two different senders and routinely land
+  on different ticks. Covered by `tests/verify_topup_db.py`.
 - **`template_id` is written as NULL** on every parse, so there is no record of which template
   matched and `hit_count` never climbs.
 - **Code templates cannot be edited from the UI.** Derived templates live in `sms_templates`

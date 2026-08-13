@@ -31,7 +31,7 @@ PURE = [
 ]
 
 DB = ["verify_persistence.py", "verify_balances.py", "verify_template_store.py",
-      "verify_endpoints.py"]
+      "verify_topup_db.py", "verify_endpoints.py"]
 
 
 def run(script, args=()):

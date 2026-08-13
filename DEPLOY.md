@@ -167,13 +167,17 @@ newlines, so it does not send what is in the file. The `@` form reads the bytes
 as they are, which is the point — you are testing whether a real message
 verifies, so it has to be a real message.
 
-`202 Accepted` means the deployment, the secret, the database, the schema and
+`202 Accepted` means the deployment, the token, the database, the schema and
 the dedup path are all correct, and anything that goes wrong afterwards is the
-phone. This signs with `tools/shortcut-signer.js` — the same file the Shortcut
-runs — so a pass here is evidence about that specific code.
+phone. This posts the same way the Shortcut does — bearer token, plain JSON,
+no `received_at` — so a pass here is evidence about that exact path rather
+than about a nearby one.
 
-`401` is the signature or the secret. `422` is the body shape. `5xx` means it
-reached the database and did not like what it found there.
+`401` is the token. `422` is the body shape. `5xx` means it reached the
+database and did not like what it found there.
+
+Add `--hmac` to exercise the signed envelope instead, which stays supported as
+the upgrade path.
 
 ---
 
@@ -315,24 +319,11 @@ in Vault and on Vercel disagree.
 
 ## 4. Build the Shortcut
 
-Install **[Actions](https://apps.apple.com/app/id1586435171)** first — free. It
-supplies the two things Shortcuts lacks: a way to run JavaScript, and a
-keychain to keep the secret out of the shortcut body. Restart the phone if the
-actions do not appear; that is a known iOS bug, not a bad install.
+One action. No third-party app, no JavaScript, no keychain.
 
-Shortcuts has no HMAC action, and its JSON serializer is not something you can
-pin or inspect. Since `/api/ingest` signs the literal request body, the body
-and its signature have to come out of the same code in one step — otherwise
-two serializers have to agree forever, and the day they stop is a bare 401 on
-a phone with no logs.
-
-**Store the secret first.** Actions → **Keychain**, save `INGEST_SECRET` under
-`sms-ledger-secret`. Anything pasted into the shortcut body is readable by
-anyone who opens it or receives a copy.
-
-**The Sender field cannot be used.** It only accepts entries from Contacts, and
-a bank's alphanumeric sender ID (`AlRajhiBank`, `SAIB`) cannot be made into a
-contact — there is no phone number to give it. Apple's
+**The Sender field cannot be used as a trigger.** It only accepts entries from
+Contacts, and a bank's alphanumeric sender ID (`AlRajhiBank`, `SAIB`) cannot be
+made into a contact — there is no phone number to give it. Apple's
 [communication triggers](https://support.apple.com/guide/shortcuts/communication-triggers-apdd711f9dff/ios)
 documents only two options, Sender and Message Contains, and states that when
 several criteria are set, *all* must match. So the trigger is Message Contains
@@ -350,79 +341,64 @@ SAR      ر.س      SR      ريال
 Create one Message automation per phrase, **Run Immediately**, notifications
 off. Overlapping filters are harmless: a message matching two fires twice, and
 the second POST returns `202 duplicate` on `body_hash`. That dedup exists for
-the phone's retry behaviour and covers this case for free.
+the phone's retry behaviour and covers this for free.
 
-**Build the logic once.** Four copies of the signer would drift. Put the
-actions below in a normal shortcut named `Ledger Ingest` that accepts Text, and
-make each automation two actions: a **Text** action with the two lines, then
-**Run Shortcut** → `Ledger Ingest` with that text as input.
+**Each automation is one action: `Get Contents of URL`.**
 
-**The actions, in order:**
+| Field | Value |
+|---|---|
+| URL | `https://<project>.vercel.app/api/ingest` |
+| Method | `POST` |
+| Headers | `Authorization` = `Bearer <INGEST_SECRET>` |
+| Request Body | **JSON** |
+| &nbsp;&nbsp;`sender` | `Shortcut Input`, Type **Sender** |
+| &nbsp;&nbsp;`body` | `Shortcut Input`, Type **Content** |
 
-1. **Keychain** — Get `sms-ledger-secret`.
-2. **Text** — exactly two lines, no labels, no blanks:
+**`Sender` is a property of `Shortcut Input`, not a variable of its own.** The
+variable picker offers only `Shortcut Input`, which looks like the sender is
+unavailable and is the point at which this design appears to fail. It is not.
+Insert `Shortcut Input`, then *tap the inserted chip* — a panel appears with
+`Type:` and the choices **Message, Content, Recipients, Sender**.
 
-   ```
-   [Sender]
-   [Content]
-   ```
+`received_at` is deliberately absent. The server defaults it to arrival time in
+Riyadh, which is within a second of the SMS — and requiring it cost a whole
+`Format Date` action whose *Include Time* toggle was the commonest cause of a
+422.
 
-   The sender never contains a newline, so the body is unambiguously
-   everything after the first one — which is why the message's own line
-   breaks need no escaping.
+### Why this is one action and not thirteen
 
-   **`Sender` is a property of `Shortcut Input`, not a variable of its own.**
-   The variable picker offers only `Shortcut Input`, which looks like the
-   sender is unavailable and is the point at which this design appears to fail.
-   It is not. Insert `Shortcut Input`, then *tap the inserted chip* — a panel
-   appears with `Type:` and the choices **Message, Content, Recipients,
-   Sender**. Line 1 is `Shortcut Input` with Type `Sender`; line 2 is the same
-   variable with Type `Content`.
-3. **Transform Text with JavaScript** — Text: the action above. Code: paste
-   `tools/shortcut-signer.js`, replacing `PASTE_INGEST_SECRET_HERE` with the
-   Keychain variable from step 1.
-4. **Get Contents of URL** — the built-in is fine here.
-   - `POST` to `https://<project>.vercel.app/api/ingest`
-   - One header: `Content-Type` = `application/json`
-   - Request Body: **File**, set to the output of step 3
-5. **If** `Contents of URL` **does not contain** `body_hash` →
-   **Show Notification**.
+The first version of this ran to thirteen actions, and all of them existed to
+serve the HMAC signature: a third-party app for JavaScript, a hand-rolled
+SHA-256, a keychain lookup, a text assembly step, then `Split Text`, three
+`Get Item from List` and three `Set Variable` actions to pull the signer's
+single return value back apart.
 
-### Why it is only five actions
+Weighed against the actual threat — someone guessing the ingest URL and
+injecting fabricated transactions — a 256-bit bearer token over TLS closes it
+exactly as completely. Replay is already inert because ingest dedups on
+`body_hash`. TLS supplies the integrity the signature would have.
 
-An earlier version of this ran to thirteen, and seven of those were plumbing
-rather than logic. The Shortcuts JavaScript action returns exactly **one** text
-value, so delivering a signature, a timestamp and a body as three separate HTTP
-fields meant `Split Text`, three `Get Item from List` and three `Set Variable`
-actions to pull them apart again — seven taps' worth of ceremony guarding
-nothing, each one a place to wire the wrong item number.
+The one real difference is that the token travels on every request instead of
+never leaving the device. SPEC §10.1 says "do not skip the HMAC", but its
+stated reason is a *public unauthenticated* endpoint, and this is neither.
 
-The signer now returns a single envelope, `{"sig","ts","payload"}`, and the
-server unwraps it in three lines. The signature still covers the exact bytes of
-`payload`, so nothing about the security changed: `payload` is carried as a
-JSON *string*, not a nested object, precisely so no second encoder can touch
-the bytes between signing and verifying.
+**The decision is reversible from the phone alone.** `/api/ingest` still
+accepts both signed forms, `tools/shortcut-signer.js` is still maintained, and
+both are covered by the test suite — so moving back means rebuilding the
+shortcut, not changing the server. `node tools/send.mjs … --hmac` exercises the
+signed path from a terminal.
 
-Two more actions went the same way. The JavaScript generates `received_at`
-itself, in Riyadh time with a fixed `+03:00` — Saudi Arabia has never observed
-daylight saving — which removes `Format Date` and removes the commonest cause
-of a 422, which was leaving *Include Time* switched off. And the OTP filter
-moved entirely to the server (see below), removing `Match Text`, an `If` and a
-`Stop`.
+### Two things worth adding
 
-### Three details that each cost an evening
-
-- **Request Body must be `File`, never Shortcuts' JSON dictionary builder.**
-  The builder re-serializes, the bytes stop matching the signature, and you get
-  a 401 that looks exactly like a wrong secret.
-- **Test the response body, not a status code.** The built-in Get Contents of
-  URL returns the *body*; it has no status-code output at all, so a check like
-  `is not 202` is true even when the request succeeded, and the notification
-  fires on every message until you stop believing it. Both success responses —
-  `accepted` and `duplicate` — contain `body_hash`; a 401 and a 422 do not.
-- **Step 5 is not optional.** iOS message automations fail quietly: phone off,
-  an iOS update disabling the automation, a dropped network. Without a
-  notification the first symptom is a gap in the ledger you notice weeks later.
+- **Failure is silent by default.** iOS message automations fail quietly:
+  phone off, an iOS update disabling the automation, a dropped network. If you
+  want a signal, add **If** `Contents of URL` **does not contain** `body_hash`
+  → **Show Notification**. Both success responses contain `body_hash`; a 401
+  and a 422 do not. Test the *body*, not a status code — the built-in URL
+  action has no status-code output at all.
+- **`/review` flags ingestion stale after 24 hours** with no message, which
+  catches a dead automation even without the notification — but only if you
+  look at the page.
 
 ### OTPs are filtered on the server only
 
@@ -433,9 +409,9 @@ the tick instead: classified `otp`, never posted, and the body overwritten with
 
 That redaction is the one sanctioned exception to `raw_messages` being
 immutable (§8) — the row survives so dedup and history stay intact, the
-passcode does not. It runs on the tick rather than as a 24-hour sweep, so a
+passcode does not. It runs on the tick rather than as a nightly sweep, so a
 live passcode exists in the database for about a minute, and there is no
-scheduled job to notice has stopped running.
+scheduled job that can silently stop running.
 
 ---
 
@@ -500,9 +476,10 @@ because one working message proves the pipeline, not the template set.
 
 Neither blocks turning it on; both matter once messages accumulate.
 
-- **`link_topups` does not run on the DB path.** A wallet top-up and the spend
-  it funds are both counted. The two-month simulation measures this at +320 in
-  phantom expense.
+- ~~**`link_topups` does not run on the DB path.**~~ Fixed — `/api/parse-tick`
+  now calls `db.link_topups` on every tick and reports a `topup_pairs` count.
+  Requires migration `0001_nosy_chamber` (two columns on `transactions`), so
+  run `npm run db:migrate` before deploying this.
 - **No heartbeat.** `/review` flags ingestion as stale after 24 hours with no
   message, which catches a dead automation — but only if you look at the page.
   SPEC §10.1 wants a daily ping; there isn't one yet.

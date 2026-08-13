@@ -40,6 +40,10 @@
 // Same value as INGEST_SECRET on Vercel. Use the Actions app's "Keychain"
 // action to fetch it at runtime rather than leaving it in the shortcut body,
 // where it is readable by anyone who opens the shortcut or receives a copy.
+//
+// NEVER commit a real value here. This file is tracked, so a secret pasted in
+// survives rotation: it stays in the git history and on GitHub after the live
+// value has changed. Substitute it on the phone, not in the repo.
 var SECRET = "PASTE_INGEST_SECRET_HERE";
 var DEVICE_ID = "iphone";
 

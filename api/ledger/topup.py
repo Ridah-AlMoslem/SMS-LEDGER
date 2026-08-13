@@ -16,10 +16,19 @@ def link_topups(txns, owned_cards, window=WINDOW):
 
     txns entries need: id, institution, account, card_last4, amount, ts, kind,
     is_internal (bool), transfer_group_id (None).
+
+    Safe to run repeatedly over a set that grows between runs, which is what
+    the database path does — it re-scans on every parse tick, and the two legs
+    routinely arrive on different ticks because they come from two different
+    senders. `transfer_group_id`, not `is_internal`, is what marks a top-up as
+    already handled: an unpaired top-up is set internal on sight (it is still
+    a movement between two accounts you own, counterpart or not), so keying
+    off `is_internal` would retire it on the first pass and leave its AlRajhi
+    leg counted as spending forever if that message landed one tick later.
     """
     topups = [t for t in txns
               if t["kind"] == "wallet_topup" and t.get("card_last4") in owned_cards
-              and not t["is_internal"]]
+              and t.get("transfer_group_id") is None]
     pairs, claimed = [], set()
 
     for tu in sorted(topups, key=lambda t: t["ts"]):

@@ -14,13 +14,25 @@ from __future__ import annotations
 
 import os
 import re
+import uuid
+from datetime import timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
+from ledger.topup import WINDOW as TOPUP_WINDOW
+from ledger.topup import link_topups as _link_topups
+
 CENTS = Decimal("0.01")
+
+# How far back `link_topups` re-scans for legs that have not been paired yet.
+# A counterpart cannot be more than TOPUP_WINDOW from its top-up, so this is
+# not about finding older pairs — it is about how long a top-up whose funding
+# message never arrived keeps being reconsidered, in case that message is
+# backfilled later. `dates.LIVE_WINDOW` accepts messages up to 72 hours old.
+TOPUP_LOOKBACK = timedelta(days=7)
 
 
 def money(value) -> Decimal | None:
@@ -202,11 +214,13 @@ def record_outcome(conn, message_id, result, slug_to_id) -> int:
             INSERT INTO transactions (
                 raw_message_id, account_id, posted_at, amount, direction, type,
                 merchant_raw, biller, is_internal_transfer, reported_balance,
-                fee_amount, original_currency, origin, state
+                fee_amount, original_currency, card_last4, parser_kind,
+                origin, state
             ) VALUES (
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
-                %s, %s, 'parsed', 'posted'
+                %s, %s, %s, %s,
+                'parsed', 'posted'
             )
             ON CONFLICT (raw_message_id, account_id, direction) DO NOTHING
             """,
@@ -216,6 +230,9 @@ def record_outcome(conn, message_id, result, slug_to_id) -> int:
                 leg.get("merchant"), leg.get("biller"), leg["is_internal"],
                 money(leg.get("balance")),
                 money(leg.get("fee_amount")), leg.get("original_currency"),
+                # Both are what `link_topups` needs and what `type` alone
+                # cannot supply — see the column comments in schema.ts.
+                leg.get("card_last4"), leg["kind"],
             ),
         )
         posted += 1
@@ -340,6 +357,92 @@ def requeue_shape(conn, shape_hash: str) -> int:
         (shape_hash,),
     )
     return result.rowcount
+
+
+def link_topups(conn, window=TOPUP_WINDOW, lookback=TOPUP_LOOKBACK) -> int:
+    """Mark wallet top-ups and the card purchases that fund them as internal.
+
+    The one rule in the system that cannot be decided from a single message.
+    A Barq `اضافة اموال` and the AlRajhi `شراء انترنت` that funds it are the
+    same 8 SAR described twice by two institutions; book both as they arrive
+    and the money is spent once and counted twice. `parse_message` sees one
+    message at a time and structurally cannot catch it, so it runs here, after
+    the legs are written.
+
+    Deliberately delegates to `ledger.topup.link_topups` rather than
+    reimplementing the pairing rule in SQL. That rule has seven invariants
+    pinned in tests/verify_topup_link.py — the 5-minute window, the 1:1
+    claiming, the refusal to absorb a same-amount bill payment — and a second
+    copy in another language would be one edit away from disagreeing with the
+    tested one. This function's job is loading rows and writing back, nothing
+    more.
+
+    Idempotent: linked pairs carry a `transfer_group_id` and are skipped on
+    the next tick. Bounded: only the recent window is scanned, since a
+    counterpart more than `window` from a top-up can never pair with it.
+    """
+    owned = {
+        r["value"]
+        for r in conn.execute(
+            "SELECT value FROM account_identifiers WHERE kind = 'card'"
+        ).fetchall()
+        if r["value"]
+    }
+    if not owned:
+        return 0
+
+    # A margin past the lookback so a top-up sitting exactly on the boundary
+    # can still see a counterpart that falls just outside it.
+    rows = conn.execute(
+        """
+        SELECT id, account_id, posted_at, amount, card_last4, parser_kind,
+               is_internal_transfer, transfer_group_id
+        FROM transactions
+        WHERE parser_kind IN ('wallet_topup', 'purchase')
+          AND state = 'posted'
+          AND posted_at > now() - %s::interval - %s::interval
+        ORDER BY posted_at
+        """,
+        (lookback, window),
+    ).fetchall()
+
+    txns = [
+        dict(id=r["id"], institution=None, account=r["account_id"],
+             card_last4=r["card_last4"], amount=float(r["amount"]),
+             ts=r["posted_at"], kind=r["parser_kind"],
+             is_internal=r["is_internal_transfer"],
+             transfer_group_id=r["transfer_group_id"])
+        for r in rows
+    ]
+    before = {t["id"]: t["is_internal"] for t in txns}
+
+    pairs = _link_topups(txns, owned, window)
+
+    # The pure function labels groups `tg-<id>`; the column is a uuid. The
+    # label is not carried over — only the grouping it expresses.
+    for topup_id, purchase_id in pairs:
+        group = uuid.uuid4()
+        conn.execute(
+            """
+            UPDATE transactions
+            SET is_internal_transfer = true, transfer_group_id = %s
+            WHERE id = ANY(%s)
+            """,
+            (group, [topup_id, purchase_id]),
+        )
+
+    # An unpaired top-up from a card you own is still internal — it is money
+    # moving between two of your own accounts whether or not the funding
+    # message ever arrives. No group, so it stays eligible for pairing later.
+    orphans = [t["id"] for t in txns if t["is_internal"] and not before[t["id"]]
+               and t["transfer_group_id"] is None]
+    if orphans:
+        conn.execute(
+            "UPDATE transactions SET is_internal_transfer = true WHERE id = ANY(%s)",
+            (orphans,),
+        )
+
+    return len(pairs)
 
 
 def recompute_balances(conn) -> int:

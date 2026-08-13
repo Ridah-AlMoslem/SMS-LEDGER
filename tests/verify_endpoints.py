@@ -157,7 +157,47 @@ def main_test():
                      headers={"Content-Type": "application/json"})
     check("a mis-signed envelope is rejected", r5.status_code, 401)
 
+    # Bearer auth: what the phone actually uses, and the reason the Shortcut
+    # is one action long. Same message again, so it must still dedup.
+    plain = {"sender": SALARY[0], "body": SALARY[1],
+             "received_at": when.isoformat()}
+    r6 = client.post("/api/ingest", json=plain,
+                     headers={"Authorization": f"Bearer {INGEST_SECRET}"})
+    check("bearer token is accepted", r6.status_code, 202)
+    check("and dedups against the signed forms", r6.json()["status"], "duplicate")
+
+    r7 = client.post("/api/ingest", json=plain,
+                     headers={"Authorization": "Bearer wrong"})
+    check("a wrong token is rejected", r7.status_code, 401)
+
+    # The bearer branch must not become a way around signing. An unsigned
+    # request with no Authorization header at all still has to fail.
+    r8 = client.post("/api/ingest", json=plain)
+    check("no token and no signature is still 401", r8.status_code, 401)
+
     check("only one raw row", _count("raw_messages"), 1)
+
+    print("\n[2b] received_at DEFAULTS TO ARRIVAL, IN RIYADH TIME")
+    # Dropping it removes a whole Shortcuts action; the value still has to be
+    # right, because it decides which salary cycle a payday belongs to.
+    r9 = client.post(
+        "/api/ingest",
+        json={"sender": "SAIB", "body": "بدون تاريخ SAR 1.00"},
+        headers={"Authorization": f"Bearer {INGEST_SECRET}"})
+    check("accepted without received_at", r9.status_code, 202)
+
+    with store.connect(DSN) as conn:
+        row = conn.execute(
+            "SELECT received_at FROM raw_messages WHERE body LIKE 'بدون%'").fetchone()
+        check("stored tz-aware", row["received_at"].tzinfo is not None, True)
+        check("within a minute of now",
+              abs((datetime.now(UTC) - row["received_at"]).total_seconds()) < 60, True)
+
+        # Removed again so the tick counts below measure what they claim to.
+        # A fixture that quietly changes the arithmetic of later assertions is
+        # worse than no fixture: it makes a real regression look like this.
+        conn.execute("DELETE FROM raw_messages WHERE body LIKE 'بدون%'")
+        conn.commit()
     check("ingest never parses", _count("transactions"), 0)
 
     print("\n[3] PARSE TICK  (§10.3)")

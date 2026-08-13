@@ -301,6 +301,27 @@ export const transactions = pgTable(
 
     cardScheme: cardScheme("card_scheme"),
 
+    /** The masked card this leg moved through, as the sender printed it.
+     *
+     *  Kept because top-up linking is the one rule that spans two messages
+     *  from two different institutions, and the card is what identifies them
+     *  as the same money: a Barq `اضافة اموال` names the funding card, and the
+     *  AlRajhi purchase that funds it names the same card. Amount and time
+     *  alone are not enough to pair them — a wallet purchase of the same
+     *  amount in the same minute is an ordinary occurrence, since spending the
+     *  wallet is precisely what the top-up was for. */
+    cardLast4: text("card_last4"),
+
+    /** The parser's own class for this leg, before it was coarsened into
+     *  `type`.
+     *
+     *  `_KIND_TO_TYPE` folds `wallet_topup`, `transfer_in` and
+     *  `cashback_redeem` all onto `transfer`, which is right for the ledger —
+     *  it does not care — but it destroys the only marker that says which
+     *  transfers are top-ups. Rebuilding that from `type` plus the presence of
+     *  a card would be a guess dressed as a query. */
+    parserKind: text("parser_kind"),
+
     /** §9.4 — a field you edited by hand survives replay untouched. This is
      *  the highest-consequence guarantee in the system. */
     origin: origin("origin").notNull().default("parsed"),
@@ -319,6 +340,8 @@ export const transactions = pgTable(
     index("transactions_account_posted_idx").on(t.accountId, t.postedAt),
     index("transactions_posted_idx").on(t.postedAt),
     index("transactions_transfer_group_idx").on(t.transferGroupId),
+    // The top-up linking scan: unlinked legs on a given card, by time.
+    index("transactions_card_posted_idx").on(t.cardLast4, t.postedAt),
     // Idempotency: one message, one transaction.
     unique("transactions_one_per_message").on(t.rawMessageId, t.accountId, t.direction),
   ],

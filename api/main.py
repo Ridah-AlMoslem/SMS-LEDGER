@@ -17,7 +17,7 @@ import hashlib
 import hmac
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
@@ -46,7 +46,12 @@ CASHBACK_ACCOUNT = os.environ.get("CASHBACK_ACCOUNT_SLUG", "cashback_wallet")
 class IngestPayload(BaseModel):
     sender: str = Field(min_length=1, max_length=64)
     body: str = Field(min_length=1, max_length=4000)
-    received_at: datetime
+    # Optional, and defaulted to arrival time when absent (§10.1). The phone
+    # fires within a second of the SMS, so the two differ by less than the
+    # minute that `body_hash` rounds to and by far less than anything the date
+    # rules can see. Requiring it bought nothing and cost an entire Shortcuts
+    # action, whose "Include Time" toggle was the single commonest 422.
+    received_at: datetime | None = None
     device_id: str | None = None
 
 
@@ -102,39 +107,71 @@ def verify_signature(raw_body: bytes, signature: str, timestamp: str) -> None:
         raise HTTPException(401, "bad signature")
 
 
+def verify_token(authorization: str) -> bool:
+    """Bearer auth. Returns True if a valid token was presented.
+
+    The simple path, and the one the iPhone Shortcut uses. HMAC costs a
+    third-party app, a hand-rolled SHA-256 and three extra actions on the
+    phone; measured against the actual threat — someone guessing a URL — a
+    256-bit token in a header over TLS closes it just as completely. Replay is
+    already inert because ingest dedups on `body_hash`, and TLS supplies the
+    integrity the signature would have.
+
+    What is genuinely given up: the secret travels on every request instead of
+    never leaving the device. That is the whole delta, and on a single-user
+    ledger posting to its own domain it is a reasonable price for a shortcut
+    that is one action long and cannot be mis-wired.
+
+    The signed paths below are kept so that decision stays reversible from the
+    phone alone, with no server change.
+    """
+    if not authorization.startswith("Bearer "):
+        return False
+    if not INGEST_SECRET:
+        raise HTTPException(500, "INGEST_SECRET is not configured")
+    if not hmac.compare_digest(authorization[7:].strip(), INGEST_SECRET):
+        raise HTTPException(401, "bad token")
+    return True
+
+
 @app.post("/api/ingest", status_code=202)
 async def ingest(
     request: Request,
+    authorization: str = Header(default=""),
     x_signature: str = Header(default=""),
     x_timestamp: str = Header(default=""),
 ) -> dict:
-    # Two accepted shapes, one rule: the HMAC always covers the exact bytes of
-    # the JSON that describes the message, never a re-serialization of it.
+    # Three accepted shapes. One rule holds across all of them: nothing is
+    # parsed as a message until the caller has been authenticated.
     #
-    #   envelope  {"sig","ts","payload"}   — the phone. Signed over `payload`.
-    #   headers   X-Signature/X-Timestamp  — curl, tools/send.mjs, anything
-    #                                        that can set headers freely.
+    #   bearer    Authorization: Bearer <INGEST_SECRET>  — the phone.
+    #   envelope  {"sig","ts","payload"}                 — signed over payload.
+    #   headers   X-Signature / X-Timestamp              — signed over the body.
     #
-    # Both are kept because the envelope exists to work around a Shortcuts
-    # limitation, and a limitation of one client is a poor reason to make
-    # every other caller carry the same workaround.
+    # The signed forms remain because they are the upgrade path, and an
+    # upgrade path that is not exercised is not a path. Both are covered by
+    # tests/verify_endpoints.py and tests/verify_shortcut_signer.py.
     raw = await request.body()
 
-    try:
-        envelope = SignedEnvelope.model_validate_json(raw)
-    except ValidationError:
-        envelope = None
-
-    if envelope is not None:
-        signed, signature, timestamp = (
-            envelope.payload.encode(), envelope.sig, envelope.ts)
+    if verify_token(authorization):
+        signed = raw
     else:
-        signed, signature, timestamp = raw, x_signature, x_timestamp
+        try:
+            envelope = SignedEnvelope.model_validate_json(raw)
+        except ValidationError:
+            envelope = None
 
-    # Signature first, parsing second. An unsigned request should never reach
-    # the message parser at all — that is unauthenticated attacker-controlled
-    # input, and validating it before authenticating it is backwards.
-    verify_signature(signed, signature, timestamp)
+        if envelope is not None:
+            signed, signature, timestamp = (
+                envelope.payload.encode(), envelope.sig, envelope.ts)
+        else:
+            signed, signature, timestamp = raw, x_signature, x_timestamp
+
+        # Signature first, parsing second. An unsigned request should never
+        # reach the message parser at all — that is unauthenticated
+        # attacker-controlled input, and validating it before authenticating
+        # it is backwards.
+        verify_signature(signed, signature, timestamp)
 
     try:
         payload = IngestPayload.model_validate_json(signed)
@@ -152,7 +189,12 @@ async def ingest(
             422, exc.errors(include_url=False, include_input=False,
                             include_context=False))
 
-    received = payload.received_at
+    # Riyadh, not UTC, when the phone leaves it out. The value is compared
+    # against the wall-clock the bank printed and decides which salary cycle a
+    # payday lands in, so a 00:30 transaction stored as UTC would read as the
+    # previous day and therefore the previous cycle (§10.4.1). Saudi Arabia has
+    # never observed daylight saving, so the offset is fixed.
+    received = payload.received_at or datetime.now(timezone(timedelta(hours=3)))
     if received.tzinfo is None:
         received = received.replace(tzinfo=timezone.utc)
 
@@ -176,7 +218,7 @@ async def parse_tick(x_cron_secret: str = Header(default=""), limit: int = 50) -
         raise HTTPException(401, "unauthorized")
 
     counts = {"claimed": 0, "parsed": 0, "ignored": 0, "review": 0, "failed": 0,
-              "legs": 0, "alerts": 0}
+              "legs": 0, "topup_pairs": 0, "alerts": 0}
 
     with store.connect() as conn:
         identifiers, slug_to_id = store.load_account_map(conn)
@@ -205,6 +247,15 @@ async def parse_tick(x_cron_secret: str = Header(default=""), limit: int = 50) -
                 store.record_failure(conn, msg["id"], f"{type(exc).__name__}: {exc}")
                 conn.commit()
                 counts["failed"] += 1
+
+        # Cross-message, so it cannot live in parse_message: a wallet top-up
+        # and the card purchase funding it are two messages from two different
+        # senders, and the second one routinely lands on a later tick than the
+        # first. Runs every tick over the recent window rather than only over
+        # what was just claimed, which is what makes arrival order stop
+        # mattering.
+        counts["topup_pairs"] = store.link_topups(conn)
+        conn.commit()
 
         # Balances are derived, so this runs every tick regardless of whether
         # anything parsed — a manual edit or a deleted transaction changes them

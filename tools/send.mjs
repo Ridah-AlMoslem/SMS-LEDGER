@@ -27,7 +27,8 @@ if (!sender || !bodyArg || !secret || !base) {
   console.error(
     "usage: INGEST_SECRET=... BASE_URL=https://<app>.vercel.app \\\n" +
       '         node tools/send.mjs "<sender>" @path/to/message.txt\n' +
-      '         node tools/send.mjs "<sender>" "<body>"\n\n' +
+      '         node tools/send.mjs "<sender>" "<body>"\n' +
+      "         ... --hmac   to use the signed envelope instead of bearer\n\n" +
       "Prefer @file. A bank SMS is right-to-left, multi-line, and full of\n" +
       "characters a shell wants to interpret; reading it from a file keeps\n" +
       "the terminal out of the loop entirely. Command substitution also\n" +
@@ -53,22 +54,34 @@ if (!body.trim()) {
   process.exit(1);
 }
 
-// Posted exactly as the phone posts it: the signer's single output value IS
-// the request body. Sending it any other way would test a code path the phone
-// never takes, which is the opposite of what this script is for.
-const envelope = signer.buildRequest(
-  `${sender}\n${body}`,
-  secret,
-  "cli",
-  Date.now(),
-);
+// Bearer auth and a plain JSON body — exactly what the Shortcut sends, down
+// to omitting received_at so the server's default is exercised too. Testing a
+// path the phone never takes is the opposite of what this script is for.
+//
+// Pass --hmac to exercise the signed envelope instead. That path is still
+// supported and still the upgrade route, so it is worth being able to reach
+// from a terminal rather than only from a phone.
+const useHmac = process.argv.includes("--hmac");
+
+const request = useHmac
+  ? {
+      headers: { "Content-Type": "application/json" },
+      body: signer.buildRequest(`${sender}\n${body}`, secret, "cli", Date.now()),
+    }
+  : {
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${secret}`,
+      },
+      body: JSON.stringify({ sender, body, device_id: "cli" }),
+    };
 
 let res;
 try {
   res = await fetch(`${base}/api/ingest`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: envelope,
+    headers: request.headers,
+    body: request.body,
   });
 } catch (err) {
   // "Couldn't reach it" and "it said no" are different problems, and an

@@ -8,6 +8,13 @@
       "when": 1786528515390,
       "tag": "0000_slow_terrax",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786603457367,
+      "tag": "0001_nosy_chamber",
+      "breakpoints": true
     }
   ]
 }

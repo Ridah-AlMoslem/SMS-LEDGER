@@ -428,7 +428,130 @@ console.log("\n[10] A CORRECTED BALANCE ANSWERS AN OPEN DRIFT ALERT (§3.3)");
   });
 }
 
-console.log("\n[11] A REFUSED EDIT CHANGES NOTHING AT ALL");
+console.log("\n[11] ONLY THE FIELD THAT CHANGED IS WRITTEN");
+{
+  // Columns the sheet does not offer, plus one it does but this edit will not
+  // touch. A save that writes the whole row would flatten all of them back to
+  // whatever the form was rendered with.
+  await pg.exec(`
+    UPDATE accounts
+       SET sort_order = 4, is_active = false, statement_day = 15, due_day = 5
+     WHERE slug = 'ar_card'
+  `);
+
+  const before = await account("ar_card");
+
+  const res = await applyAccountEdit(db, {
+    accountId: card.id,
+    draft: {
+      name: "AlRajhi Visa Signature",
+      type: "credit_card",
+      balanceSemantics: "available_credit",
+      reconcilable: true,
+      creditLimit: "14000.00",
+      statementDay: 15,
+      dueDay: 5,
+      isProfitBearing: false,
+      profitPayoutDay: null,
+    },
+    targetBalance: null,
+    note: null,
+  });
+
+  assert.equal(res.ok, true, res.ok ? "" : res.error);
+  check("the rename is the only change reported", () =>
+    assert.deepEqual(Object.keys(res.outcome.changed), ["name"]));
+
+  const after = await account("ar_card");
+  check("and the only column that moved", () => {
+    const moved = Object.keys(after).filter(
+      (k) => String(after[k]) !== String(before[k]),
+    );
+    assert.deepEqual(moved, ["name"]);
+  });
+  check("the columns the sheet never offers are intact", () => {
+    assert.equal(after.sort_order, 4);
+    // Untouched by the UPDATE above too — it is the cold-start anchor every
+    // balance is derived from, and the sheet has no business writing it.
+    assert.equal(after.opening_balance, "9000.00");
+    assert.equal(after.is_active, false);
+    assert.equal(after.slug, "ar_card");
+  });
+}
+
+console.log("\n[12] A BALANCE NOBODY TOUCHED IS LEFT ALONE");
+{
+  // The sheet is open, showing 9,500.00. A message lands and the parser posts
+  // a 120.00 purchase, so the real figure is now 9,380.00. The person renames
+  // the account and saves — the balance field still holds what the page was
+  // rendered with.
+  await pg.exec(`
+    INSERT INTO transactions (account_id, posted_at, amount, direction, type, state)
+    VALUES ('${card.id}', now(), '120.00', 'debit', 'purchase', 'posted');
+  `);
+  await recompute();
+  await acheck("the parser moved it to 9,380.00", async () =>
+    assert.equal((await account("ar_card")).current_balance, "9380.00"));
+
+  const res = await applyAccountEdit(db, {
+    accountId: card.id,
+    draft: {
+      name: "AlRajhi Visa",
+      type: "credit_card",
+      balanceSemantics: "available_credit",
+      reconcilable: true,
+      creditLimit: "14000.00",
+      statementDay: 15,
+      dueDay: 5,
+      isProfitBearing: false,
+      profitPayoutDay: null,
+    },
+    targetBalance: "9500.00",
+    knownBalance: "9500.00",
+    note: null,
+  });
+
+  assert.equal(res.ok, true, res.ok ? "" : res.error);
+  check("nothing is booked against the stale figure", () =>
+    assert.equal(res.outcome.adjustment, null));
+  await acheck("so the purchase that just posted still stands", async () =>
+    assert.equal((await account("ar_card")).current_balance, "9380.00"));
+  await acheck("and the rename went through", async () =>
+    assert.equal((await account("ar_card")).name, "AlRajhi Visa"));
+}
+
+console.log("\n[13] A BALANCE SOMEBODY DID TYPE STILL WINS");
+{
+  // Same stale form, but this time the figure was read off the bank app and
+  // typed in. It is an absolute target, so the leg is computed from the CURRENT
+  // balance — 9,380.00 — not from the one the page was showing.
+  const res = await applyAccountEdit(db, {
+    accountId: card.id,
+    draft: {
+      name: "AlRajhi Visa",
+      type: "credit_card",
+      balanceSemantics: "available_credit",
+      reconcilable: true,
+      creditLimit: "14000.00",
+      statementDay: 15,
+      dueDay: 5,
+      isProfitBearing: false,
+      profitPayoutDay: null,
+    },
+    targetBalance: "9,000.00",
+    knownBalance: "9500.00",
+    note: null,
+  });
+
+  assert.equal(res.ok, true, res.ok ? "" : res.error);
+  check("the leg is the gap from the real balance, not the shown one", () =>
+    assert.equal(res.outcome.adjustment.amount, "380.00"));
+  await recompute();
+  await acheck("and it lands exactly on the typed figure", async () =>
+    assert.equal((await account("ar_card")).current_balance, "9000.00"));
+}
+
+console.log("\n[14] A REFUSED EDIT CHANGES NOTHING AT ALL");
 {
   const res = await applyAccountEdit(db, {
     accountId: card.id,
@@ -449,7 +572,7 @@ console.log("\n[11] A REFUSED EDIT CHANGES NOTHING AT ALL");
 
   check("it is refused", () => assert.equal(res.ok, false));
   await acheck("and the balance is untouched", async () =>
-    assert.equal((await account("ar_card")).current_balance, "9500.00"));
+    assert.equal((await account("ar_card")).current_balance, "9000.00"));
 }
 
 await pg.close();

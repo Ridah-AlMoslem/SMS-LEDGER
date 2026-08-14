@@ -46,6 +46,20 @@ export type EditInput = {
   draft: AccountDraft;
   /** The balance as the person typed it, or null to leave it alone. */
   targetBalance: string | null;
+  /**
+   * The balance the form was populated with, if it was populated at all.
+   *
+   * The balance field arrives pre-filled, so every save submits a figure
+   * whether or not anyone touched it — and a balance is not a value the form
+   * owns. The parser moves it whenever a message lands, which it can do while
+   * the sheet sits open. Without this, renaming an account at the wrong moment
+   * books a correction back to whatever the balance was when the page
+   * rendered, silently undoing a transaction that had just posted.
+   *
+   * So a submitted balance equal to the one the form started with is read as
+   * "left alone", not as "set it to this".
+   */
+  knownBalance?: string | null;
   note: string | null;
   /** Injectable so a test can post at a known instant. */
   at?: Date;
@@ -60,10 +74,20 @@ export type EditResult = { ok: true; outcome: EditOutcome } | { ok: false; error
 
 export async function applyAccountEdit(db: Db, input: EditInput): Promise<EditResult> {
   const draft = normalise(input.draft);
-  const target = input.targetBalance === null ? null : input.targetBalance.trim() || null;
+  const submitted = input.targetBalance === null ? null : input.targetBalance.trim() || null;
 
-  const invalid = validate(draft, target);
+  const invalid = validate(draft, submitted);
   if (invalid) return { ok: false, error: invalid };
+
+  // Untouched, so not a request at all. Compared as amounts rather than as
+  // text: the form renders "1912.40" and a person retyping the same figure may
+  // write "1,912.4", and neither is an edit.
+  const untouched =
+    submitted !== null &&
+    input.knownBalance != null &&
+    parseAmount(submitted) === parseAmount(input.knownBalance);
+
+  const target = untouched ? null : submitted;
 
   return db.transaction(async (tx: any): Promise<EditResult> => {
     // FOR UPDATE, because the delta is computed from the balance read one
@@ -155,27 +179,35 @@ export async function applyAccountEdit(db: Db, input: EditInput): Promise<EditRe
       });
     }
 
-    await tx
-      .update(schema.accounts)
-      .set({
-        name: after.name,
-        type: after.type as typeof schema.accounts.$inferInsert.type,
-        isLiability,
-        balanceSemantics:
-          after.balanceSemantics as typeof schema.accounts.$inferInsert.balanceSemantics,
-        reconcilable: after.reconcilable,
-        creditLimit,
-        statementDay: after.statementDay,
-        dueDay: after.dueDay,
-        isProfitBearing: after.isProfitBearing,
-        profitPayoutDay: after.profitPayoutDay,
-        // Set here as well as booked, so the screen is right immediately rather
-        // than at the next tick. The figure is not a second opinion: it is
-        // exactly what recompute_balances arrives at, because the leg above is
-        // part of the sum it computes.
-        ...(adjustment ? { currentBalance: after.currentBalance, balanceAsOf: at } : {}),
-      })
-      .where(eq(schema.accounts.id, before.id));
+    // Only the columns that actually moved. `changed` was computed field by
+    // field against the row locked above, so a column nobody edited is not in
+    // this SET at all — it keeps whatever it holds, including a value written
+    // by something else while the form sat open.
+    //
+    // Writing the whole row instead would be a form-shaped overwrite of the
+    // account: every save would assert the values the page was rendered with,
+    // and anything that changed underneath in between would be reverted with
+    // no record that it ever held another figure.
+    //
+    // The keys come from the diff, which only ever emits the fields in the
+    // lib's own label table — so this cannot reach a column the sheet does not
+    // offer, and `slug`, `institution`, `opening_balance`, `sort_order` and
+    // `is_active` are untouchable here by construction.
+    const patch: Record<string, unknown> = {};
+    for (const field of Object.keys(changed)) {
+      patch[field] = after[field as keyof AccountState];
+    }
+
+    if (adjustment) {
+      // Set here as well as booked, so the screen is right immediately rather
+      // than at the next tick. The figure is not a second opinion: it is
+      // exactly what recompute_balances arrives at, because the leg above is
+      // part of the sum it computes.
+      patch.currentBalance = after.currentBalance;
+      patch.balanceAsOf = at;
+    }
+
+    await tx.update(schema.accounts).set(patch).where(eq(schema.accounts.id, before.id));
 
     await tx.insert(schema.accountEdits).values({
       accountId: before.id,

@@ -50,11 +50,11 @@ export async function saveAccount(_prev: SaveResult | null, form: FormData): Pro
         ...days,
         isProfitBearing: bool("is_profit_bearing"),
       },
-      // An untouched balance field is not a request to set the balance to what
-      // it already is — it is a request to leave it alone. The distinction
-      // matters because the two produce different ledgers: one books nothing,
-      // the other would book a zero-amount leg for every rename.
       targetBalance: opt("balance"),
+      // What the field was pre-filled with, so a balance nobody touched is
+      // left alone rather than re-asserted over whatever the parser has
+      // posted since the sheet opened.
+      knownBalance: opt("balance_was"),
       note: opt("note"),
     });
   } catch (err) {

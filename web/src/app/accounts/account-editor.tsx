@@ -168,6 +168,11 @@ export function AccountEditor({
 
         <form action={action} className="mt-4">
           <input type="hidden" name="id" value={account.id} />
+          {/* What the balance field below was rendered with. A balance moves
+              on its own — the parser rewrites it whenever a message lands —
+              so submitting this figure back unchanged has to mean "leave it",
+              not "set it to what the screen was showing". */}
+          <input type="hidden" name="balance_was" value={account.currentBalance} />
 
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">

@@ -47,6 +47,24 @@ itself. That is the floor of the format, not a fixable drawing problem.
 mask installed icons themselves, so maskable and apple-touch artwork must not
 arrive with rounded corners already baked in or it gets double-rounded.
 
+## The loader is the same mark
+
+`src/components/ui/loader.tsx` is the app's only waiting state: this mark with
+the arrows travelling in opposite directions on a shared 1.4s clock, glyph
+static between them. Keyframes are `ledger-fall` / `ledger-rise` in
+`globals.css`, which also suppresses the travel under `prefers-reduced-motion`.
+
+It redraws the arrows in TSX from the same four constants used here, and takes
+the glyph paths from `src/lib/brand.ts` rather than this directory — a `.py`
+file cannot be imported by the app. `npm run test:brand` asserts the two copies
+still agree on paths, viewBox, colours and arrow geometry, so editing one half
+fails loudly rather than quietly shipping a loader that no longer matches the
+favicon.
+
+Consequence worth knowing: **changing the arrow geometry below changes the
+loader too.** That is the intent, but it means a tweak made for the 16px
+favicon also lands in every route transition.
+
 ## Where it is wired
 
 Next.js App Router picks these up by filename — no `<link>` tags in `layout.tsx`:

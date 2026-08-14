@@ -999,7 +999,21 @@ Alert types: reconciliation drift, no heartbeat for 24h, review queue non-empty,
 
 **Export is a v1 feature, not a nicety.** One click to CSV and JSON for transactions, and a full dump of `raw_messages` — the raw store is the irreplaceable asset, since everything else can be re-derived from it (§3.1). You're on a free tier that pauses on inactivity and offers no restore guarantees; treat your own export as the backup. A scheduled monthly export reminder is worth the two lines it costs.
 
-### 11.7 Deferred to v2
+### 11.7 The mark, and the waiting state
+
+**The app mark is the Saudi Riyal symbol flanked by two arrows** — money out falling on the left in `#FB7185`, money in rising on the right in `#34D399`, on a `#0A0A0A` tile. The two colours are the same ones every amount in the UI is already printed in, so the icon and the ledger rows agree rather than each having their own palette. `web/brand/build-icons.py` is the only thing that draws it; the favicon, the apple-touch icon and the manifest PNGs are all generated from that one definition so they cannot disagree about what the app looks like.
+
+**There is exactly one waiting state, and it is that mark in motion.** `web/src/components/ui/loader.tsx` animates the two arrows travelling in opposite directions on a shared 1.4s clock, glyph static between them. One loader, used everywhere, for the same reason there is one period model: a wait that looks different depending on which screen you are on is a wait you have to interpret twice. A second spinner — a CSS border trick, a shimmer library, a component-library import — is a defect, not a variation.
+
+Three constraints that are not stylistic:
+
+- **Every route carries a `loading.tsx`.** Every page is `force-dynamic` and reads Postgres (§4), so a route without one shows nothing at all between the tap and the answer, which is indistinguishable from a dead tab bar. The static heading renders immediately and only the numbers wait, so the reader knows which screen they landed on before the data arrives.
+- **Below roughly 28px the glyph is dropped** (`variant="arrows"`). The Riyal symbol is two stems, a crossbar and three angled bars; at inline sizes that fills in to a smudge, and a smudge is worse than no glyph.
+- **Motion is decoration and the announcement is the meaning.** The loader is a `role="status"` region with a label naming what is being waited on, and the travel is suppressed under `prefers-reduced-motion` — leaving the mark rendered but still, rather than removing the only visible sign that anything is happening.
+
+**The glyph is defined twice, and that duplication is tested.** `build-icons.py` is Python and runs at build time; `web/src/lib/brand.ts` is TypeScript and feeds the loader at runtime. Neither can import the other, so `npm run test:brand` asserts the paths, viewBox, colours and arrow geometry still match across the two. Two copies of a 900-character path string is precisely the duplication that survives one careless edit and then ships a loader that no longer matches the tab icon — a difference nobody notices deliberately, but which makes the product look assembled from parts.
+
+### 11.8 Deferred to v2
 
 Natural-language query, anomaly detection, spend forecasting beyond simple run-rate. All of these depend on having clean, trusted data first — build them once the ledger has a few months of verified history.
 

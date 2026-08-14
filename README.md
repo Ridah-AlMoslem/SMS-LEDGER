@@ -66,8 +66,15 @@ api/                 Python service — deployed at /api/*
                      resolve → post → link
 
 web/                 Next.js 16 — deployed at /*
+  CLAUDE.md          UI conventions — read before adding anything visual
   src/db/schema.ts   Drizzle schema (SPEC §4), the single source of truth
   src/db/index.ts    Postgres client
+  src/lib/brand.ts   Riyal glyph paths + credit/debit colours, for runtime use
+  src/components/ui/ Shared primitives. loader.tsx is the app's only waiting
+                     state — see Design rules
+  src/app/*/loading.tsx  One per route; every page is force-dynamic
+  brand/             The app mark. build-icons.py generates icon.svg,
+                     favicon.ico, apple-icon.png and the manifest PNGs
   drizzle.config.ts
 
 tests/               Reference suite. Any change must keep these passing.
@@ -280,6 +287,21 @@ salary carries `تاريخ استحقاق`, and the due date decides the cycle.
 **Reconcile against the balance printed in the SMS.** Drift means a message was missed,
 double-counted, or misparsed. This is what makes the dashboard trustworthy rather than
 decorative — and on a credit card, `رصيد` is available credit, not debt.
+
+**There is one waiting state, and it is the app mark.** `web/src/components/ui/loader.tsx` —
+the Riyal glyph flanked by the two in/out arrows, arrows travelling in opposite directions.
+Every route is `force-dynamic` and reads Postgres, so every route has a `loading.tsx`; a tab
+with none appears to do nothing until the server answers. Do not add a second spinner, an
+`animate-spin` border, or a shimmer library. A wait that looks like every other web app's wait
+is a wasted opportunity to look like this one. The glyph is dropped below ~28px
+(`variant="arrows"`) because it is detailed enough to become a smudge inline.
+
+**The mark exists twice, and a test keeps the copies honest.** `web/brand/build-icons.py`
+generates the favicon and friends at build time; `web/src/lib/brand.ts` feeds the loader at
+runtime. Python cannot import TypeScript, so `npm run test:brand` asserts the glyph paths,
+viewBox, colours and arrow geometry still agree across the two. Two copies of a 900-character
+path string is exactly the duplication that survives one careless edit and quietly ships a
+loader that no longer matches the tab icon.
 
 ---
 

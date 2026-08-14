@@ -2,6 +2,8 @@
 
 import { useActionState, useState } from "react";
 
+import { Loader } from "@/components/ui/loader";
+
 import { type DeriveResult, deriveTemplate } from "./actions";
 
 const KINDS = [
@@ -144,11 +146,17 @@ export function DeriveForm({
       )}
 
       <div className="mt-3 flex items-center gap-2">
+        {/* The template is tested against the message server-side before it is
+            stored, which is a round trip the reader has no other signal for.
+            The compact loader drops the glyph — at 16px it would only be a
+            smudge — and keeps the two arrows, so the wait still looks like the
+            rest of the app. */}
         <button
           type="submit"
           disabled={pending}
-          className="rounded-lg border border-black/15 px-3 py-1.5 text-sm hover:bg-black/5 disabled:opacity-50 dark:border-white/20 dark:hover:bg-white/10"
+          className="inline-flex items-center gap-1.5 rounded-lg border border-black/15 px-3 py-1.5 text-sm hover:bg-black/5 disabled:opacity-50 dark:border-white/20 dark:hover:bg-white/10"
         >
+          {pending && <Loader size={16} variant="arrows" label="Checking the template" />}
           {pending ? "Checking…" : "Save template"}
         </button>
         <button

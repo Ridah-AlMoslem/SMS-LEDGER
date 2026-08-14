@@ -52,3 +52,65 @@ body {
   unicode-bidi: isolate;
   white-space: pre-wrap;
 }
+
+/* The loader in components/ui/loader.tsx: the app mark's two arrows travelling
+   in opposite directions, money out falling and money in rising.
+
+   Both run on the same clock and the same distance, so the mark stays visually
+   balanced through the cycle — the point being read here is exchange, not a
+   race. Travel distance arrives as --ledger-travel from the component because
+   the compact variant uses a smaller viewBox and needs a shorter throw to
+   cover the same fraction of it.
+
+   These translate SVG user units, not CSS pixels: inside a viewBox the value
+   is interpreted in the element's own coordinate system, which is why the same
+   keyframes work at every rendered size. */
+@keyframes ledger-fall {
+  0% {
+    transform: translateY(calc(var(--ledger-travel) * -1));
+    opacity: 0;
+  }
+  12%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(var(--ledger-travel));
+    opacity: 0;
+  }
+}
+
+@keyframes ledger-rise {
+  0% {
+    transform: translateY(var(--ledger-travel));
+    opacity: 0;
+  }
+  12%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(calc(var(--ledger-travel) * -1));
+    opacity: 0;
+  }
+}
+
+.ledger-loader-fall {
+  animation: ledger-fall 1.4s ease-in-out infinite;
+}
+
+.ledger-loader-rise {
+  animation: ledger-rise 1.4s ease-in-out infinite;
+}
+
+/* Reduced motion leaves the mark rendered but still, rather than removing it.
+   The wait is announced through role="status" either way, so the animation is
+   decoration; a reader who has asked for less movement should still see what
+   they are waiting on. */
+@media (prefers-reduced-motion: reduce) {
+  .ledger-loader-fall,
+  .ledger-loader-rise {
+    animation: none;
+    opacity: 1;
+  }
+}

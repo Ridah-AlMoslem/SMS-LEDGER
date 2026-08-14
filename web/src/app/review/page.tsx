@@ -1,6 +1,7 @@
 import { desc, inArray, sql } from "drizzle-orm";
 
 import { getDb, schema } from "@/db";
+import { timeOfDay } from "@/lib/format";
 import {
   type Health,
   type ParkedMessage,
@@ -14,15 +15,6 @@ import { dismissGroup, restoreGroup, retryGroup } from "./actions";
 import { DeriveForm } from "./derive-form";
 
 export const dynamic = "force-dynamic";
-
-const WHEN = new Intl.DateTimeFormat("en-GB", {
-  day: "2-digit",
-  month: "short",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-  timeZone: "Asia/Riyadh",
-});
 
 async function load() {
   const db = getDb();
@@ -142,8 +134,8 @@ function GroupCard({
         </div>
         <p className="text-xs opacity-50">
           {group.count > 1
-            ? `${WHEN.format(group.oldest)} – ${WHEN.format(group.newest)}`
-            : WHEN.format(group.newest)}
+            ? `${timeOfDay(group.oldest)} – ${timeOfDay(group.newest)}`
+            : timeOfDay(group.newest)}
         </p>
       </header>
 
@@ -226,7 +218,7 @@ export default async function ReviewPage() {
       <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
         <Stat
           label="Last message"
-          value={data.health.lastReceived ? WHEN.format(data.health.lastReceived) : "never"}
+          value={data.health.lastReceived ? timeOfDay(data.health.lastReceived) : "never"}
           tone={stale ? "warn" : undefined}
         />
         <Stat label="Parsed" value={String(data.health.parsed)} />

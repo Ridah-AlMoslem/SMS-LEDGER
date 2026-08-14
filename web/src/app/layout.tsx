@@ -2,7 +2,6 @@ import { inArray, sql } from "drizzle-orm";
 import { Suspense } from "react";
 import type { Metadata, Viewport } from "next";
 
-import { PeriodHeader } from "@/components/period-header";
 import { TabBar } from "@/components/tab-bar";
 import { getDb, schema } from "@/db";
 
@@ -68,15 +67,20 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className="h-full antialiased">
       <body className="flex min-h-full flex-col">
-        {/* Both read the URL, which is a request-time value; the Suspense
-            boundary keeps that from pulling the whole tree client-side. */}
-        <div className="mx-auto w-full max-w-2xl flex-1 px-6 pt-2 pb-6">
-          <Suspense fallback={<div className="mb-5 h-[52px]" />}>
-            <PeriodHeader />
-          </Suspense>
-          {children}
-        </div>
+        {/* The PeriodHeader is deliberately NOT here. It belongs to the pages
+            whose numbers are period-scoped — Home, Ledger, Plan — and putting
+            it in the layout would hang a week/cycle stepper above Accounts,
+            Review and Settings, none of which are. A control that appears to
+            scope a screen it does not scope is worse than no control: it
+            invites the reader to believe a balance changed because they
+            stepped back a month.
 
+            The selection still survives navigation, because it lives in the
+            URL and the tab bar carries the query across. */}
+        <div className="mx-auto w-full max-w-2xl flex-1 px-6 pt-4 pb-6">{children}</div>
+
+        {/* Reads the URL, a request-time value; the boundary keeps that from
+            pulling the whole tree client-side. */}
         <Suspense fallback={<div className="h-[57px]" />}>
           <TabBar parked={parked} />
         </Suspense>

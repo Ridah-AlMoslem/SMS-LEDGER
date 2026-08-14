@@ -17,6 +17,43 @@ import { sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import type { CivilDate, Grain } from "@/lib/periods";
 
+/**
+ * §6, as one predicate each. Every chart, total and drill-through filters with
+ * these — never with a hand-written copy.
+ *
+ * The rules are short enough to retype and that is exactly the danger: §6's
+ * worked example overstates expense by nearly 7× when a single clause is
+ * dropped, and the wrong figure is entirely plausible. One chart quietly
+ * disagreeing with the total above it is the failure this prevents.
+ */
+const OWNED_MONEY_MOVING = sql`NOT is_internal_transfer AND NOT excluded_from_analytics`;
+
+/**
+ * Excludes internal transfers (moving your own money is not spending), card
+ * payments (the purchase was already counted — counting both inflates spending
+ * up to 2×) and loan payments (only the interest is expense; the principal
+ * moves net worth). Declined authorisations never happened.
+ */
+export const IS_EXPENSE = sql`direction = 'debit'
+  AND ${OWNED_MONEY_MOVING}
+  AND type NOT IN ('card_payment', 'loan_payment')
+  AND state <> 'declined'`;
+
+/** Salary and the like. income_class distinguishes it further on the row. */
+export const IS_EARNED = sql`direction = 'credit'
+  AND ${OWNED_MONEY_MOVING} AND type = 'income'`;
+
+/**
+ * Profit and cashback accrual. §6: "Profit must be counted as income — it's
+ * not optional. Exclude it and the master invariant breaks, because net worth
+ * rose by money that never appeared in your income figure."
+ */
+export const IS_PASSIVE = sql`direction = 'credit'
+  AND ${OWNED_MONEY_MOVING} AND type = 'profit'`;
+
+/** §11.2 — a first-class category. Hiding it makes every other number wrong. */
+export const IS_UNCATEGORIZED = sql`category_id IS NULL AND ${IS_EXPENSE}`;
+
 export type PeriodTotals = {
   /** §6 — debits that are genuinely money leaving. */
   expense: number;
@@ -54,39 +91,12 @@ export async function periodTotals(grain: Grain, period: CivilDate): Promise<Per
     transactions: number;
   }>(sql`
     SELECT
-      -- §6: excludes internal transfers (moving your own money is not an
-      -- expense), card payments (the purchase was already counted, and
-      -- counting both inflates spending up to 2x) and loan payments (only the
-      -- interest portion is expense; the principal moves net worth).
-      COALESCE(sum(amount) FILTER (
-        WHERE direction = 'debit'
-          AND NOT is_internal_transfer
-          AND type NOT IN ('card_payment', 'loan_payment')
-          AND NOT excluded_from_analytics
-          AND state <> 'declined'), 0) AS expense,
-
-      COALESCE(sum(amount) FILTER (
-        WHERE direction = 'credit' AND type = 'income'
-          AND NOT is_internal_transfer AND NOT excluded_from_analytics), 0) AS earned,
-
-      -- Profit is stored as type='profit' by the writer, but §6 is explicit
-      -- that it counts as income: "Exclude it and the master invariant below
-      -- breaks, because net worth rose by money that never appeared in your
-      -- income figure." Cashback accrual lands here too.
-      COALESCE(sum(amount) FILTER (
-        WHERE direction = 'credit' AND type = 'profit'
-          AND NOT is_internal_transfer AND NOT excluded_from_analytics), 0) AS passive,
-
-      COALESCE(sum(amount) FILTER (
-        WHERE category_id IS NULL AND direction = 'debit'
-          AND NOT is_internal_transfer
-          AND type NOT IN ('card_payment', 'loan_payment')
-          AND NOT excluded_from_analytics), 0) AS uncategorized,
-
-      count(*) FILTER (WHERE category_id IS NULL AND direction = 'debit'
-                         AND NOT is_internal_transfer)::int AS uncategorized_count,
-
-      count(DISTINCT transaction_id)::int AS transactions
+      COALESCE(sum(amount) FILTER (WHERE ${IS_EXPENSE}), 0)        AS expense,
+      COALESCE(sum(amount) FILTER (WHERE ${IS_EARNED}), 0)         AS earned,
+      COALESCE(sum(amount) FILTER (WHERE ${IS_PASSIVE}), 0)        AS passive,
+      COALESCE(sum(amount) FILTER (WHERE ${IS_UNCATEGORIZED}), 0)  AS uncategorized,
+      count(*) FILTER (WHERE ${IS_UNCATEGORIZED})::int             AS uncategorized_count,
+      count(DISTINCT transaction_id)::int                          AS transactions
     FROM v_categorized_amounts
     WHERE ${bucket} = ${period}::date
   `);

@@ -6,6 +6,8 @@
  * rule nobody can test.
  */
 
+import { dayMonthYear } from "./format.ts";
+
 export type AccountRow = {
   id: string;
   slug: string;
@@ -136,13 +138,6 @@ export function money(n: number): string {
   return MONEY.format(Math.abs(n));
 }
 
-const AS_OF = new Intl.DateTimeFormat("en-GB", {
-  day: "numeric",
-  month: "short",
-  year: "numeric",
-  timeZone: "Asia/Riyadh",
-});
-
 export function asOf(d: Date | null): string | null {
-  return d ? AS_OF.format(d) : null;
+  return d ? dayMonthYear(d) : null;
 }

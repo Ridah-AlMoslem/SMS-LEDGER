@@ -1,20 +1,12 @@
+import { PeriodHeader } from "@/components/period-header";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Money } from "@/components/ui/money";
 import { periodTransactions } from "@/db/aggregates";
+import { weekdayTime } from "@/lib/format";
 import { readSelection } from "@/lib/period-params";
 import { periodLabel } from "@/lib/periods";
 
 export const dynamic = "force-dynamic";
-
-const WHEN = new Intl.DateTimeFormat("en-GB", {
-  weekday: "short",
-  day: "2-digit",
-  month: "short",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-  timeZone: "Asia/Riyadh",
-});
 
 /**
  * Every transaction in the selected period.
@@ -48,6 +40,7 @@ export default async function LedgerPage(props: PageProps<"/ledger">) {
 
   return (
     <main>
+      <PeriodHeader />
       <div className="flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Ledger</h1>
         <p className="text-xs opacity-50">
@@ -80,7 +73,7 @@ export default async function LedgerPage(props: PageProps<"/ledger">) {
                   <div className="min-w-0 flex-1">
                     <p className="sms-body truncate font-medium">{label}</p>
                     <p className="mt-0.5 truncate text-xs opacity-60">
-                      {WHEN.format(t.postedAt)} · {t.accountName}
+                      {weekdayTime(t.postedAt)} · {t.accountName}
                       {t.categoryName ? ` · ${t.categoryName}` : ""}
                       {t.isInternal ? " · internal" : ""}
                     </p>

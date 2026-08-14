@@ -14,7 +14,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useEffect } from "react";
+import { Suspense, useEffect } from "react";
 
 import {
   DEFAULT_GRAIN,
@@ -43,7 +43,7 @@ function Chevron({ dir }: { dir: "left" | "right" }) {
   );
 }
 
-export function PeriodHeader() {
+function PeriodHeaderInner() {
   const params = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
@@ -153,5 +153,21 @@ export function PeriodHeader() {
         </div>
       )}
     </header>
+  );
+}
+
+/**
+ * The Suspense boundary lives here rather than at each call site.
+ *
+ * useSearchParams is a request-time API: without a boundary it pulls the
+ * client tree above it into client-side rendering. Owning that here means a
+ * page cannot forget it, and the fallback reserves the header's height so the
+ * content below does not jump when it hydrates.
+ */
+export function PeriodHeader() {
+  return (
+    <Suspense fallback={<div className="mb-5 h-[52px]" />}>
+      <PeriodHeaderInner />
+    </Suspense>
   );
 }

@@ -1,3 +1,4 @@
+import { PeriodHeader } from "@/components/period-header";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Money } from "@/components/ui/money";
 import { StatCard } from "@/components/ui/stat-card";
@@ -48,6 +49,7 @@ export default async function PlanPage(props: PageProps<"/plan">) {
 
   return (
     <main>
+      <PeriodHeader />
       <div className="flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Plan</h1>
         <p className="text-xs opacity-50">{periodLabel(grain, period)}</p>

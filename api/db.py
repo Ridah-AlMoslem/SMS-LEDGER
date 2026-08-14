@@ -24,6 +24,7 @@ from psycopg.types.json import Json
 
 from ledger.topup import WINDOW as TOPUP_WINDOW
 from ledger.topup import link_topups as _link_topups
+from ledger.transfers import find_duplicate_descriptions
 
 CENTS = Decimal("0.01")
 
@@ -33,6 +34,11 @@ CENTS = Decimal("0.01")
 # message never arrived keeps being reconsidered, in case that message is
 # backfilled later. `dates.LIVE_WINDOW` accepts messages up to 72 hours old.
 TOPUP_LOOKBACK = timedelta(days=7)
+
+# Same reasoning for the cross-institution echo: the two sides arrive from two
+# senders and routinely land on different ticks, so the scan has to keep
+# reconsidering recent transfers rather than only what was just written.
+TRANSFER_LOOKBACK = timedelta(days=7)
 
 
 def money(value) -> Decimal | None:
@@ -445,6 +451,86 @@ def link_topups(conn, window=TOPUP_WINDOW, lookback=TOPUP_LOOKBACK) -> int:
     return len(pairs)
 
 
+
+def supersede_echoed_transfers(conn, window=None, lookback=TRANSFER_LOOKBACK) -> int:
+    """Collapse a movement that two institutions each described in full.
+
+    A cross-bank transfer sends one SMS from each side. Both parse, and both
+    resolve BOTH accounts — Barq names the destination `لحساب7001`, SAIB names
+    the source `XXXX0018` — so `pipeline._legs_for` books the whole movement
+    twice. Four legs for one 113, and both balances move twice.
+
+    Spending is unaffected, since every leg is internal (SPEC §6). The damage
+    is to balances, and it surfaces as a reconciliation alert against an
+    account that looks like it dropped a message when it actually processed one
+    twice — which is the most misleading direction for that alert to point.
+
+    Delegates the rule to `ledger.transfers`, for the same reason `link_topups`
+    delegates to `ledger.topup`: the guards are what make it safe, they are
+    pinned in tests/verify_transfer_dedup.py against the real 2026-08-09
+    messages, and a second copy in SQL would be one edit away from disagreeing
+    with the tested one.
+
+    Idempotent — a superseded leg is excluded from the next scan, so re-running
+    over a set that grows between ticks converges instead of oscillating.
+    """
+    from ledger.transfers import WINDOW as TRANSFER_WINDOW
+
+    window = window or TRANSFER_WINDOW
+
+    rows = conn.execute(
+        """
+        SELECT t.id, t.raw_message_id, t.account_id, t.direction, t.amount,
+               t.posted_at, m.sender
+        FROM transactions t
+        JOIN raw_messages m ON m.id = t.raw_message_id
+        WHERE t.is_internal_transfer
+          AND t.superseded_by IS NULL
+          AND t.state = 'posted'
+          AND t.type = 'transfer'
+          AND t.posted_at > now() - %s::interval
+        ORDER BY t.posted_at
+        """,
+        (lookback,),
+    ).fetchall()
+
+    # One entry per message: what that message said happened.
+    descriptions = {}
+    for r in rows:
+        d = descriptions.setdefault(
+            r["raw_message_id"],
+            dict(id=r["raw_message_id"], institution=r["sender"],
+                 ts=r["posted_at"], legs=[]),
+        )
+        d["legs"].append(dict(id=r["id"], account=r["account_id"],
+                              direction=r["direction"], amount=float(r["amount"])))
+
+    pairs = find_duplicate_descriptions(list(descriptions.values()), window)
+    if not pairs:
+        return 0
+
+    superseded = 0
+    for kept_msg, echo_msg in pairs:
+        # Point each echoed leg at the surviving leg for the SAME account and
+        # direction, so the link explains itself: this row is that row, said
+        # twice. A single group id would lose which leg maps to which.
+        keep_by_side = {
+            (leg["account"], leg["direction"]): leg["id"]
+            for leg in descriptions[kept_msg]["legs"]
+        }
+        for leg in descriptions[echo_msg]["legs"]:
+            target = keep_by_side.get((leg["account"], leg["direction"]))
+            if target is None:
+                continue
+            conn.execute(
+                "UPDATE transactions SET superseded_by = %s WHERE id = %s",
+                (target, leg["id"]),
+            )
+            superseded += 1
+
+    return superseded
+
+
 def recompute_balances(conn) -> int:
     """Derive every account balance from opening_balance + its posted legs.
 
@@ -481,6 +567,11 @@ def recompute_balances(conn) -> int:
             LEFT JOIN transactions tx
                    ON tx.account_id = acc.id
                   AND tx.state = 'posted'
+                  -- A second institution's description of a movement already
+                  -- booked is not a second movement (SPEC 8.2.1). Counting it
+                  -- moves both balances twice and shows up as reconciliation
+                  -- drift on an account that processed one message twice.
+                  AND tx.superseded_by IS NULL
             GROUP BY acc.id
         ) t
         WHERE a.id = t.id

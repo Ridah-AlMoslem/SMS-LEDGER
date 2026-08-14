@@ -43,6 +43,13 @@
       "when": 1786625586994,
       "tag": "0005_seed_categories",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786668389070,
+      "tag": "0006_supersede_echoed_transfers",
+      "breakpoints": true
     }
   ]
 }

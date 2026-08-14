@@ -271,6 +271,12 @@ async def parse_tick(x_cron_secret: str = Header(default=""), limit: int = 50) -
         counts["topup_pairs"] = store.link_topups(conn)
         conn.commit()
 
+        # Same class of problem, opposite shape: a cross-bank transfer is one
+        # movement that BOTH institutions describe in full, so it books twice.
+        # Must run before balances, which is what it exists to protect.
+        counts["superseded_legs"] = store.supersede_echoed_transfers(conn)
+        conn.commit()
+
         # Balances are derived, so this runs every tick regardless of whether
         # anything parsed — a manual edit or a deleted transaction changes them
         # too, and recomputing costs one aggregate.

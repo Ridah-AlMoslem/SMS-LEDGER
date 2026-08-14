@@ -369,6 +369,21 @@ export const transactions = pgTable(
     counterpartyId: uuid("counterparty_id").references(() => counterparties.id),
     isInternalTransfer: boolean("is_internal_transfer").notNull().default(false),
 
+    /** §8.2.1 — this leg is a second institution's description of a movement
+     *  already booked from another message, not a second movement.
+     *
+     *  A cross-bank transfer sends one SMS from each side, and each one
+     *  resolves both accounts, so each books the full movement: four legs for
+     *  one 113, both balances moved twice. Every leg is internal so spending
+     *  stays correct — the damage lands on balances, and surfaces as a
+     *  reconciliation alert against an account that looks like it lost a
+     *  message when it actually processed one twice.
+     *
+     *  Points at the leg that was kept. The row is never deleted: the echo is
+     *  real, its raw message is real, and the link is what explains why the
+     *  ledger shows one movement where two messages arrived. */
+    supersededBy: uuid("superseded_by"),
+
     reversesTransactionId: uuid("reverses_transaction_id"),
     refundsTransactionId: uuid("refunds_transaction_id"),
     refundedAmount: numeric("refunded_amount", { precision: 14, scale: 2 }),

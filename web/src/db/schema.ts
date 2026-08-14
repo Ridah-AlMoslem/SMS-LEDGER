@@ -96,6 +96,15 @@ export const transactionType = pgEnum("transaction_type", [
   "income",
   "profit",
   "bill_payment",
+  /** A balance corrected by hand (§3.3b, §12.7).
+   *
+   *  Not money that moved — money that was already there and unaccounted for,
+   *  usually on an account whose bank never states a balance. It exists as a
+   *  transaction because balances are derived from the legs and nothing else:
+   *  `recompute_balances` would overwrite a directly-written figure on the next
+   *  tick. Always `excluded_from_analytics`; a correction is neither income nor
+   *  spending, and booking it as either distorts the savings rate (§6). */
+  "adjustment",
 ]);
 
 /** §7.2 — a fuel pre-auth arrives before settlement. Settlement updates the
@@ -455,6 +464,44 @@ export const transactionSplits = pgTable("transaction_splits", {
     .references(() => categories.id),
   amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
 });
+
+/* ----------------------------------------------------------- account edits */
+
+/**
+ * Every hand edit to an account, as it happened.
+ *
+ * An account carries the two numbers the whole dashboard is built on — the
+ * balance and, on a card, the limit that turns it into debt — so a screen that
+ * lets you change them silently is a screen that can make net worth wrong with
+ * nothing to point at afterwards. Each save writes one row here saying which
+ * fields moved and from what.
+ *
+ * A balance change additionally books an `adjustment` transaction and links it
+ * from `adjustment_transaction_id`. That leg is the part that shows up in the
+ * ledger: the correction gets a date, an amount and an account like any other
+ * event, and — because balances are derived from the legs — it is also the only
+ * form of balance edit that survives the next parser tick.
+ *
+ * Not deleted when the account is renamed or retyped; that is the point.
+ */
+export const accountEdits = pgTable(
+  "account_edits",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    /** `{field: {from, to}}`, already rendered for display. */
+    changed: jsonb("changed").notNull(),
+    /** Why. Free text, and the most useful column here six months later. */
+    note: text("note"),
+    adjustmentTransactionId: uuid("adjustment_transaction_id").references(() => transactions.id, {
+      onDelete: "set null",
+    }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("account_edits_account_idx").on(t.accountId, t.createdAt)],
+);
 
 /* ------------------------------------------------ balances, statements, alerts */
 

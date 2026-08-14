@@ -66,7 +66,11 @@ export default async function LedgerPage(props: PageProps<"/ledger">) {
               // Can be an Arabic biller name or a Latin merchant string;
               // .sms-body isolates the bidi run so a right-to-left name cannot
               // reorder the row around it.
-              const label = t.merchant ?? t.biller ?? t.type;
+              //
+              // `description` carries rows that were never parsed from a
+              // message — a balance corrected by hand names itself there, and
+              // without it the row would read "adjustment" and explain nothing.
+              const label = t.merchant ?? t.biller ?? t.description ?? t.type;
 
               return (
                 <li key={t.id} className="flex items-center gap-4 py-3">
@@ -76,6 +80,7 @@ export default async function LedgerPage(props: PageProps<"/ledger">) {
                       {weekdayTime(t.postedAt)} · {t.accountName}
                       {t.categoryName ? ` · ${t.categoryName}` : ""}
                       {t.isInternal ? " · internal" : ""}
+                      {t.type === "adjustment" ? " · corrected by hand" : ""}
                     </p>
                   </div>
                   <Money
@@ -94,7 +99,9 @@ export default async function LedgerPage(props: PageProps<"/ledger">) {
       <p className="mt-8 text-xs opacity-50">
         Internal transfers are listed but excluded from spending totals. A transaction marked
         &ldquo;Split&rdquo; is divided across several categories; it counts once here and once in
-        total, split across categories in the breakdowns.
+        total, split across categories in the breakdowns. A balance corrected by hand appears here
+        as an adjustment — it moves the account and net worth, and counts as neither income nor
+        spending.
       </p>
     </main>
   );

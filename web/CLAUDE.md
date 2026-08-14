@@ -5,6 +5,25 @@
 Read these before adding anything visual. They exist because the alternative
 was found in this codebase and removed.
 
+## A balance is never written, only booked
+
+`accounts.current_balance` is derived. `recompute_balances` in `api/db.py`
+rewrites it as `opening_balance + Σ(posted legs)` on every parser tick, so a
+screen that UPDATEs the column has its change erased within the minute — and
+the erasure is silent.
+
+Editing a balance therefore books the difference as a transaction of type
+`adjustment` (`origin='manual'`, `excluded_from_analytics`), which the next
+recompute counts and arrives at the same figure. `src/db/account-edit.ts` is
+the only place that does this; `npm run test:account-edit` runs the parser's
+own recompute SQL against an edited account to prove the edit survives it.
+
+Anything else that lets a person change a stored figure should work the same
+way: change the events, let the figure follow. The same test file is where the
+§3.3a guards live — `is_liability` derived from the type, `available_credit`
+refused without a credit limit — because both of those, read backwards, move
+net worth by roughly a credit limit.
+
 ## Waiting states: use `<Loader>`, never a new spinner
 
 `src/components/ui/loader.tsx` is the only waiting indicator in this app. It is

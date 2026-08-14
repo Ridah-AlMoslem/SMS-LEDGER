@@ -22,6 +22,11 @@ export type AccountRow = {
   isProfitBearing: boolean;
   balanceAsOf: Date | null;
   sortOrder: number;
+  /** Carried so the edit sheet can show them. Nothing on this screen displays
+   *  them; a card's dates belong in the sheet where they can be corrected. */
+  statementDay: number | null;
+  dueDay: number | null;
+  profitPayoutDay: number | null;
 };
 
 export type Alert = {

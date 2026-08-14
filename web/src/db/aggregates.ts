@@ -131,6 +131,9 @@ export type LedgerRow = {
   type: string;
   merchant: string | null;
   biller: string | null;
+  /** Set on rows that were not parsed from a message — a hand-booked balance
+   *  adjustment says what it is here, since it has no merchant to name. */
+  description: string | null;
   isInternal: boolean;
   accountName: string;
   categoryName: string | null;
@@ -160,6 +163,7 @@ export async function periodTransactions(
     type: string;
     merchant_raw: string | null;
     biller: string | null;
+    description: string | null;
     is_internal_transfer: boolean;
     account_name: string;
     category_name: string | null;
@@ -173,7 +177,8 @@ export async function periodTransactions(
            -- Date constructor is implementation-defined. UTC ISO-8601 is not.
            to_char(t.posted_at AT TIME ZONE 'UTC',
                    'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS posted_at,
-           t.merchant_raw, t.biller, t.is_internal_transfer,
+           t.merchant_raw, t.biller, t.description,
+           t.is_internal_transfer,
            a.name AS account_name,
            CASE WHEN count(*) OVER (PARTITION BY t.id) > 1 THEN 'Split'
                 ELSE c.name END AS category_name
@@ -194,6 +199,7 @@ export async function periodTransactions(
     type: r.type,
     merchant: r.merchant_raw,
     biller: r.biller,
+    description: r.description,
     isInternal: r.is_internal_transfer,
     accountName: r.account_name,
     categoryName: r.category_name,

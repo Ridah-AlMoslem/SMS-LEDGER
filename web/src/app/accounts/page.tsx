@@ -1,9 +1,11 @@
 import { asc, desc, eq, isNull } from "drizzle-orm";
 import Link from "next/link";
 
+import type { EditRecord } from "@/app/accounts/account-editor";
 import { AccountsOverview } from "@/components/accounts-overview";
 import { EmptyState } from "@/components/ui/empty-state";
 import { getDb, schema } from "@/db";
+import { recentEdits } from "@/db/account-edit";
 import { type AccountRow, type Alert, groupByInstitution } from "@/lib/accounts";
 
 export const dynamic = "force-dynamic";
@@ -34,6 +36,9 @@ async function load() {
       isProfitBearing: schema.accounts.isProfitBearing,
       balanceAsOf: schema.accounts.balanceAsOf,
       sortOrder: schema.accounts.sortOrder,
+      statementDay: schema.accounts.statementDay,
+      dueDay: schema.accounts.dueDay,
+      profitPayoutDay: schema.accounts.profitPayoutDay,
     })
     .from(schema.accounts)
     .where(eq(schema.accounts.isActive, true))
@@ -51,7 +56,23 @@ async function load() {
     .where(isNull(schema.reconciliationAlerts.resolvedAt))
     .orderBy(desc(schema.reconciliationAlerts.detectedAt))) as Alert[];
 
-  return { accounts, alerts };
+  // Grouped here rather than queried per row: the sheet for every account is
+  // rendered with the list, and one query for all of them beats one per
+  // account on a screen that already runs two.
+  const edits: Record<string, EditRecord[]> = {};
+  for (const row of await recentEdits(db)) {
+    const record: EditRecord = {
+      id: row.id,
+      accountId: row.account_id,
+      changed: row.changed,
+      note: row.note,
+      adjustmentTransactionId: row.adjustment_transaction_id,
+      createdAt: row.created_at,
+    };
+    (edits[row.account_id] ??= []).push(record);
+  }
+
+  return { accounts, alerts, edits };
 }
 
 export default async function AccountsPage() {
@@ -83,7 +104,7 @@ export default async function AccountsPage() {
         {groups.length === 0 ? (
           <EmptyState title="No accounts yet" body="Run npm run db:seed to create them." />
         ) : (
-          <AccountsOverview groups={groups} alerts={data.alerts} />
+          <AccountsOverview groups={groups} alerts={data.alerts} edits={data.edits} />
         )}
       </div>
 

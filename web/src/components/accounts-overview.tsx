@@ -1,3 +1,4 @@
+import { AccountEditor, type EditRecord } from "@/app/accounts/account-editor";
 import {
   type AccountView,
   type Alert,
@@ -105,7 +106,37 @@ function AccountRowView({ a, drifted }: { a: AccountView; drifted: boolean }) {
   );
 }
 
-function GroupCard({ group, drifted }: { group: Group; drifted: Set<string> }) {
+/** The subset of a row the edit sheet is allowed to change. Picked explicitly
+ *  rather than passed whole: `AccountView` carries derived figures (`net`,
+ *  `debt`, `utilisation`) that are conclusions, not settings, and putting a
+ *  conclusion in a form is how it becomes an input. */
+function editable(a: AccountView) {
+  return {
+    id: a.id,
+    slug: a.slug,
+    name: a.name,
+    institution: a.institution,
+    type: a.type,
+    balanceSemantics: a.balanceSemantics,
+    reconcilable: a.reconcilable,
+    currentBalance: a.currentBalance,
+    creditLimit: a.creditLimit,
+    statementDay: a.statementDay,
+    dueDay: a.dueDay,
+    isProfitBearing: a.isProfitBearing,
+    profitPayoutDay: a.profitPayoutDay,
+  };
+}
+
+function GroupCard({
+  group,
+  drifted,
+  edits,
+}: {
+  group: Group;
+  drifted: Set<string>;
+  edits: Record<string, EditRecord[]>;
+}) {
   const negative = group.net < 0;
 
   return (
@@ -124,14 +155,25 @@ function GroupCard({ group, drifted }: { group: Group; drifted: Set<string> }) {
 
       <div className="divide-y divide-black/5 px-4 dark:divide-white/5">
         {group.accounts.map((a) => (
-          <AccountRowView key={a.id} a={a} drifted={drifted.has(a.id)} />
+          <AccountEditor key={a.id} account={editable(a)} history={edits[a.id] ?? []}>
+            <AccountRowView a={a} drifted={drifted.has(a.id)} />
+          </AccountEditor>
         ))}
       </div>
     </section>
   );
 }
 
-export function AccountsOverview({ groups, alerts }: { groups: Group[]; alerts: Alert[] }) {
+export function AccountsOverview({
+  groups,
+  alerts,
+  edits,
+}: {
+  groups: Group[];
+  alerts: Alert[];
+  /** Account id → its recent hand edits, newest first. */
+  edits: Record<string, EditRecord[]>;
+}) {
   const { assets, debt, netWorth } = totals(groups);
   const drifted = new Set(alerts.map((a) => a.accountId));
   const byId = new Map(groups.flatMap((g) => g.accounts).map((a) => [a.id, a]));
@@ -199,8 +241,14 @@ export function AccountsOverview({ groups, alerts }: { groups: Group[]; alerts: 
       )}
 
       {groups.map((g) => (
-        <GroupCard key={g.institution} group={g} drifted={drifted} />
+        <GroupCard key={g.institution} group={g} drifted={drifted} edits={edits} />
       ))}
+
+      <p className="text-xs opacity-50">
+        Tap an account to edit it. A corrected balance is booked to the ledger as an adjustment —
+        it is a dated entry you can find later, not an overwrite, and it counts as neither income
+        nor spending.
+      </p>
     </div>
   );
 }

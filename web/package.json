@@ -13,8 +13,9 @@
     "db:sql": "node scripts/run-sql.mjs",
     "db:test": "node scripts/pgserver.mjs",
     "test:accounts": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning scripts/verify-accounts-view.mjs",
+    "test:account-edit": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning scripts/verify-account-edit.mjs",
     "test:review": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning scripts/verify-review-view.mjs",
-    "test:ui": "npm run test:periods && npm run test:categorized && npm run test:accounts && npm run test:review && npm run test:brand",
+    "test:ui": "npm run test:periods && npm run test:categorized && npm run test:accounts && npm run test:account-edit && npm run test:review && npm run test:brand",
     "test:periods": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning scripts/verify-periods.mjs",
     "test:categorized": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning scripts/verify-categorized-view.mjs",
     "test:brand": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning scripts/verify-brand-sync.mjs"

@@ -1,53 +1,53 @@
 # Brand assets
 
-Design sources for the app icon. Nothing here is served — this directory sits
-outside `public/` on purpose, so the alternate marks and the preview sheet don't
+Design source for the app icon. Nothing here is served — this directory sits
+outside `public/` on purpose, so the source files and the preview sheet don't
 ride along into the deploy bundle.
 
-![Marks](preview.png)
+![Preview](preview.png)
 
-Every mark is built by [`build-icons.py`](build-icons.py), which also emits the
-active icon set. The marks live in that script rather than as hand-edited SVG
-files because all seven embed the same two-path Riyal glyph at different sizes
-and colours; seven hand-maintained copies is how they drift apart.
+## The mark
 
-## The marks
+The Saudi Riyal glyph between two vertical arrows: money out falling on the
+left in rose, money in rising on the right in emerald. The arrows flank rather
+than compete, so the currency reads as the subject and the direction of travel
+reads as context.
 
-| Name | Description |
-|---|---|
-| **`arrows-sar`** | **Active.** The previous in/out arrows with the Riyal glyph in place of the balance rule. Arrows carry less weight than they did as a standalone mark so the glyph reads as the subject and they read as the frame |
-| `sar-solo` | The glyph alone, as large as the tile allows. The plainest statement of what the app counts |
-| `sar-duotone` | Glyph split on the canvas midline, credit colour above and debit below |
-| `sar-bubble` | Glyph knocked out of the SMS bubble — currency and the source the ledger is built from, in one mark |
-| `sar-disc` | Glyph knocked out of a solid emerald disc. Reads as a coin, and the closed outer silhouette makes it the most legible of the set at 16px |
-| `sar-ring` | Glyph inside a two-arc flow ring, money in on one side and out on the other |
-| `sar-rows` | Glyph beside three ledger rows |
-
-Palette matches `globals.css` and the transaction colours already in the UI, so
-the icon and the rows in the dashboard agree:
+Colours match `globals.css` and the transaction colours already used in the UI,
+so the icon and the rows in the dashboard agree:
 
 | Role | Hex | Also used for |
 |---|---|---|
 | Tile | `#0A0A0A` | Dark-mode `--background` |
-| Ink | `#FFFFFF` | — |
+| Glyph | `#FFFFFF` | — |
 | Credit / in | `#34D399` | `emerald-400` amounts |
 | Debit / out | `#FB7185` | `rose-400` amounts |
 
-### A caveat on the Riyal glyph at favicon size
+Geometry worth not breaking:
 
-The glyph is genuinely detailed — two tall stems, a crossbar, and three angled
-bars. At 32px and up every mark here reads. At 16px the glyph's interior fills
-in and it degrades to a textured smudge, which the pre-Riyal arrows mark did
-not do. `sar-disc` and `sar-bubble` survive best, because a closed outer
-silhouette still says *something* once the interior is gone. If the tab-strip
-icon matters more than the currency reference, that is the tradeoff being made,
-and those two are the marks to prefer.
+- Both arrows span y 134–378 and are 180° rotations of each other, so the mark
+  is symmetric about its centre.
+- Shaft and head overlap by 8px. Without it the rounded shaft cap shows as a
+  notch where it meets the flat base of the head.
+- Ink spans x 55–456, leaving a 55px margin. Anything wider starts to collide
+  with the tile's 114px corner radius.
+- The glyph is 270 tall and centred, which leaves 22px of air on each side of
+  it. Its ink is denser on the left than the right, so it is worth re-measuring
+  rather than eyeballing if the size changes.
 
-Each mark also has a `-full` variant with square corners. Android and iOS mask
-installed icons themselves, so maskable and apple-touch artwork must not arrive
-with the rounded corners already baked in or it gets double-rounded.
+### A caveat at favicon size
 
-## Where the active mark is wired
+The Riyal glyph is detailed — two stems, a crossbar, three angled bars. At 32px
+and up the mark reads cleanly. At 16px the glyph's interior fills in and it
+becomes a textured smudge between the two coloured arrows; what survives is the
+rose-left / emerald-right colour signature rather than the currency symbol
+itself. That is the floor of the format, not a fixable drawing problem.
+
+`arrows-sar-full.svg` is the same artwork with square corners. Android and iOS
+mask installed icons themselves, so maskable and apple-touch artwork must not
+arrive with rounded corners already baked in or it gets double-rounded.
+
+## Where it is wired
 
 Next.js App Router picks these up by filename — no `<link>` tags in `layout.tsx`:
 
@@ -61,19 +61,19 @@ Next.js App Router picks these up by filename — no `<link>` tags in `layout.ts
 `layout.tsx` also sets `viewport.themeColor` to `#0a0a0a` so the browser chrome
 and the iOS status bar match the tile.
 
-## Rebuilding, and switching marks
+## Rebuilding
+
+The mark lives in [`build-icons.py`](build-icons.py) rather than as a
+hand-edited SVG, so the rounded and square variants cannot drift apart.
 
 ```bash
 cd web
 pip install cairosvg pillow
-
-python3 brand/build-icons.py             # rebuild all marks from ACTIVE
-python3 brand/build-icons.py sar-disc    # switch the active mark
+python3 brand/build-icons.py
 ```
 
-Passing a name regenerates `icon.svg`, `favicon.ico`, `apple-icon.png` and both
-manifest PNGs from that mark. To make the change stick for later rebuilds, also
-set `ACTIVE` at the top of the script.
+That regenerates `arrows-sar.svg`, its full-bleed twin and the 512 preview, then
+`icon.svg`, `favicon.ico`, `apple-icon.png` and both manifest PNGs.
 
 Then hard-reload — browsers cache favicons aggressively, and a normal refresh
 will keep showing the old one.
@@ -81,5 +81,5 @@ will keep showing the old one.
 ## Provenance
 
 `Saudi_Riyal_Symbol.svg` is the currency symbol published by the Saudi Central
-Bank (SAMA) in 2025. The two path definitions are inlined verbatim in
+Bank (SAMA) in 2025. Its two path definitions are inlined verbatim in
 `build-icons.py`; only fill and transform are applied.

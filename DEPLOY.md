@@ -139,6 +139,22 @@ project's Framework Preset to **Services**. `services` also requires the
 Services permission on the account — that surfaces as `vercel.json` being
 rejected outright rather than as a build failure.
 
+**Deploy from the repo root, every time.** `vercel deploy` uploads the working
+directory, and the CLI finds the project link by walking *up* to `.vercel/` — so
+running it from `web/` deploys successfully-looking and uploads only the Next
+app, without the `vercel.json` that declares the services. The build then fails
+with:
+
+```
+Error: Project framework is set to "services", but no services are declared.
+```
+
+which reads as a config error and is not one: the config is fine, it just was
+not in the directory you deployed. The tell is the file count in the build log —
+`Downloading 122 deployment files` for `web/` alone against ~149 for the repo.
+Pushing to `main` cannot make this mistake, because the git integration clones
+the repository rather than a directory, so a push is the safer of the two.
+
 The Python service installs from `api/requirements.txt`. Keep it in step with
 `pyproject.toml`; a dependency added to only one of them works locally and
 fails in the build.

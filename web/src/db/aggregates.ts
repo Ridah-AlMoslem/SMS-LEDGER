@@ -64,19 +64,20 @@ const ZERO: PeriodTotals = {
   transactions: 0,
 };
 
-export async function periodTotals(grain: Grain, period: CivilDate): Promise<PeriodTotals> {
+/**
+ * The totals for one bucket, as a fragment rather than a query.
+ *
+ * Home embeds this twice — once for the selected grain, once for the enclosing
+ * cycle — inside a single combined statement, because the database is a region
+ * away and every extra round trip is ~300ms of blank screen. Exported as SQL so
+ * there is still exactly one definition of what the totals are.
+ */
+export function periodTotalsQuery(grain: Grain, period: CivilDate) {
   // Column name, not a value — the two grains are separate columns on the view
   // and `grain` is a closed union, so there is nothing user-supplied here.
   const bucket = grain === "cycle" ? sql`cycle_start` : sql`week_start`;
 
-  const rows = await getDb().execute<{
-    expense: string;
-    earned: string;
-    passive: string;
-    uncategorized: string;
-    uncategorized_count: number;
-    transactions: number;
-  }>(sql`
+  return sql`
     SELECT
       COALESCE(sum(amount) FILTER (WHERE ${IS_EXPENSE}), 0)        AS expense,
       COALESCE(sum(amount) FILTER (WHERE ${IS_EARNED}), 0)         AS earned,
@@ -86,16 +87,28 @@ export async function periodTotals(grain: Grain, period: CivilDate): Promise<Per
       count(DISTINCT transaction_id)::int                          AS transactions
     FROM v_categorized_amounts
     WHERE ${bucket} = ${period}::date
-  `);
+  `;
+}
 
-  const r = rows[0];
+export type PeriodTotalsRow = {
+  expense: string | number;
+  earned: string | number;
+  passive: string | number;
+  uncategorized: string | number;
+  uncategorized_count: string | number;
+  transactions: string | number;
+};
+
+/**
+ * Everything is coerced explicitly. `db.execute()` runs raw SQL and does not
+ * apply Drizzle's column mappers, so what comes back is whatever the driver
+ * decided: postgres-js parses NUMERIC to string, PGlite to a number, and JSON
+ * aggregation to a number again. A count that arrives as "2" compares
+ * `"2" > 0` correctly and `"2" + 1` catastrophically.
+ */
+export function toPeriodTotals(r: PeriodTotalsRow | undefined): PeriodTotals {
   if (!r) return ZERO;
 
-  // Everything is coerced explicitly. `db.execute()` runs raw SQL and does not
-  // apply Drizzle's column mappers, so what comes back is whatever the driver
-  // decided: postgres-js parses NUMERIC to string and int4 to number, but that
-  // is a driver contract, not ours. A count that arrives as "2" compares
-  // `"2" > 0` correctly and `"2" + 1` catastrophically.
   const earned = Number(r.earned);
   const passive = Number(r.passive);
 
@@ -108,6 +121,11 @@ export async function periodTotals(grain: Grain, period: CivilDate): Promise<Per
     uncategorizedCount: Number(r.uncategorized_count),
     transactions: Number(r.transactions),
   };
+}
+
+export async function periodTotals(grain: Grain, period: CivilDate): Promise<PeriodTotals> {
+  const rows = await getDb().execute<PeriodTotalsRow>(periodTotalsQuery(grain, period));
+  return toPeriodTotals(rows[0]);
 }
 
 export type LedgerRow = {

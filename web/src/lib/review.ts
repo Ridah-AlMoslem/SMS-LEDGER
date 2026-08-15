@@ -91,6 +91,10 @@ export function groupByShape(messages: ParkedMessage[]): ShapeGroup[] {
 export type Health = {
   lastReceived: Date | null;
   pending: number;
+  /** Claimed by a tick and not yet finished. Normally zero between ticks. */
+  processing: number;
+  /** Arrival time of the oldest message still waiting to be parsed. */
+  oldestQueued: Date | null;
   parsed: number;
   ignored: number;
   needsReview: number;
@@ -117,4 +121,30 @@ export function parseRate(h: Health): number | null {
 export function ingestionStale(lastReceived: Date | null, now = new Date()): boolean {
   if (!lastReceived) return false;
   return now.getTime() - lastReceived.getTime() > 24 * 60 * 60 * 1000;
+}
+
+/**
+ * The tick runs every minute, so anything queued longer than this is not
+ * backlog — it is a tick that has stopped draining. Fifteen minutes rather than
+ * two: pg_net is fire-and-forget and a cold function genuinely takes a while,
+ * and an alarm that cries wolf gets ignored, which is worse than no alarm.
+ */
+export const QUEUE_STALL_MS = 15 * 60 * 1000;
+
+/**
+ * Parsing silently dying — the same class of failure as ingestion dying, which
+ * until now had no indicator at all.
+ *
+ * `pending` and `processing` are the only statuses that appear in NO list on
+ * this page: the queue below shows `needs_review` and `failed`, and the ledger
+ * shows `parsed`. So a message that arrived and was never drained is invisible
+ * everywhere — not processed, not in the review queue — while every tile above
+ * still reads healthy, because `parseRate` judges only messages that reached a
+ * verdict. A dead pg_cron job, a `CRON_SECRET` mismatch (the endpoint answers
+ * 401 and `cron.job_run_details` still reports success) and an unhandled error
+ * inside the tick all look identical from here: like nothing happened.
+ */
+export function parsingStalled(oldestQueued: Date | null, now = new Date()): boolean {
+  if (!oldestQueued) return false;
+  return now.getTime() - oldestQueued.getTime() > QUEUE_STALL_MS;
 }

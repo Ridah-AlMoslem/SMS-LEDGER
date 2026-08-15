@@ -123,7 +123,9 @@ def claim_pending(conn, limit: int = 50) -> list[dict]:
     only thing standing between you and double-counted spending.
 
     Also recovers rows stuck in 'processing' for over 10 minutes, which is what
-    a crashed or timed-out tick leaves behind.
+    a crashed or timed-out tick leaves behind. That recovery is unbounded on its
+    own — see `park_exhausted`, which the caller runs first so a row that can
+    never finish stops being re-claimed and becomes visible instead.
     """
     return conn.execute(
         """
@@ -148,6 +150,47 @@ def claim_pending(conn, limit: int = 50) -> list[dict]:
 
 
 MAX_ATTEMPTS = 3
+
+
+def park_exhausted(conn, max_attempts: int = MAX_ATTEMPTS) -> int:
+    """Park a message that keeps being claimed and never produces an outcome.
+
+    `record_failure` only runs when the parser RAISES. A tick that dies between
+    the claim and the outcome raises nothing this process ever sees — a Vercel
+    function timeout, the pg_net cancellation at 25s, a cold start, or an
+    exception in the post-loop passes (`link_topups`, `recompute_balances`)
+    that aborts the request after rows were already claimed. Those rows stay
+    'processing' with `last_error` NULL, and `claim_pending` picks them up
+    again ten minutes later. Nothing capped that loop.
+
+    A message cycling that way is the one state this system had no name for:
+    never parsed, never failed, so it appears in no ledger AND in no review
+    queue, and `attempts` — the only trace it leaves — is displayed nowhere.
+    §8.3 says a message is never dropped; a message nobody can see has been
+    dropped in every sense that matters.
+
+    After `max_attempts` claims it becomes 'failed', which the review screen
+    lists. Nothing is lost by parking it — the body is still there and Retry is
+    one button — only by not parking it.
+
+    Runs before the claim so a parked row is not re-claimed in the same tick.
+    """
+    result = conn.execute(
+        """
+        UPDATE raw_messages
+        SET status = 'failed',
+            last_error = COALESCE(
+                last_error,
+                'claimed ' || attempts || ' times without completing — the tick '
+                || 'ended before recording an outcome (timeout or crash)'),
+            processed_at = now()
+        WHERE status = 'processing'
+          AND attempts >= %s
+          AND last_attempt_at < now() - interval '10 minutes'
+        """,
+        (max_attempts,),
+    )
+    return result.rowcount
 
 
 def _language(value: str | None) -> str | None:

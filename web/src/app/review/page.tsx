@@ -9,6 +9,7 @@ import {
   groupByShape,
   ingestionStale,
   parseRate,
+  parsingStalled,
 } from "@/lib/review";
 
 import { dismissGroup, restoreGroup, retryGroup } from "./actions";
@@ -65,7 +66,16 @@ async function load() {
       lastReceived: sql<
         string | null
       >`to_char(max(${schema.rawMessages.receivedAt}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
+      // Same string treatment as lastReceived, and for the same reason: a raw
+      // `sql` fragment bypasses Drizzle's column mappers, so this must not be
+      // handed to Date() as whatever the driver decided to return.
+      oldestQueued: sql<
+        string | null
+      >`to_char(min(${schema.rawMessages.receivedAt}) filter (
+           where ${schema.rawMessages.status} in ('pending', 'processing')
+         ) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
       pending: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'pending')::int`,
+      processing: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'processing')::int`,
       parsed: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'parsed')::int`,
       ignored: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'ignored')::int`,
       needsReview: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'needs_review')::int`,
@@ -80,7 +90,9 @@ async function load() {
 
   const health: Health = {
     lastReceived: counts?.lastReceived ? new Date(counts.lastReceived) : null,
+    oldestQueued: counts?.oldestQueued ? new Date(counts.oldestQueued) : null,
     pending: Number(counts?.pending ?? 0),
+    processing: Number(counts?.processing ?? 0),
     parsed: Number(counts?.parsed ?? 0),
     ignored: Number(counts?.ignored ?? 0),
     needsReview: Number(counts?.needsReview ?? 0),
@@ -208,20 +220,26 @@ export default async function ReviewPage() {
   const dismissedGroups = groupByShape(data.dismissed);
   const rate = parseRate(data.health);
   const stale = ingestionStale(data.health.lastReceived);
+  const queued = data.health.pending + data.health.processing;
+  const stalled = parsingStalled(data.health.oldestQueued);
 
   return (
     <main>
       <h1 className="text-xl font-semibold">Review</h1>
 
       {/* §11.6 — the honest counterpart to a dashboard that claims to know your
-          finances. If ingestion dies, this is where you find out. */}
-      <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          finances. If ingestion OR parsing dies, this is where you find out.
+          "Queued" is here because it is the only place it can be: a message
+          waiting to be parsed is in no other list on this page, so without a
+          tile of its own it is a message that arrived and then vanished. */}
+      <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">
         <Stat
           label="Last message"
           value={data.health.lastReceived ? timeOfDay(data.health.lastReceived) : "never"}
           tone={stale ? "warn" : undefined}
         />
         <Stat label="Parsed" value={String(data.health.parsed)} />
+        <Stat label="Queued" value={String(queued)} tone={stalled ? "warn" : undefined} />
         <Stat
           label="Waiting on you"
           value={String(data.health.needsReview + data.health.failed)}
@@ -237,6 +255,17 @@ export default async function ReviewPage() {
         <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
           No message in over 24 hours. iOS message automations fail silently — check the
           Shortcut is still enabled.
+        </p>
+      )}
+
+      {stalled && (
+        <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
+          {queued} message{queued === 1 ? "" : "s"} arrived and {queued === 1 ? "has" : "have"}{" "}
+          not been parsed — the oldest since{" "}
+          {data.health.oldestQueued ? timeOfDay(data.health.oldestQueued) : "—"}. The tick runs
+          every minute, so this means it is not draining: check{" "}
+          <code>net._http_response</code> for a 401 (CRON_SECRET disagrees) or an error, and{" "}
+          <code>cron.job</code> that the schedule is still active.
         </p>
       )}
 

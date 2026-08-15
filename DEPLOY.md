@@ -330,13 +330,25 @@ several criteria are set, *all* must match. So the trigger is Message Contains
 alone, with Sender left empty.
 
 **Which phrase.** Measured over the attested corpus: no single token covers the
-ledger messages — `SAR` and `مبلغ` reach 67% each. The four currency spellings
+ledger messages — `SAR` and `مبلغ` reach 67% each. The five currency spellings
 together reach 100%, because stating an amount in riyals is the one thing every
 ledger message does:
 
 ```
-SAR      ر.س      SR      ريال
+SAR      SR      ريال      ر.س      رس
 ```
+
+**`رس` is not optional.** This list had four phrases and omitted it, while STC
+writes `بـ:55 رس` and `59.00 رس` with no other currency token anywhere in the
+message. Those two formats parse perfectly and simply never arrived: no
+automation fired, so there is no row in `raw_messages` — nothing to parse and
+nothing to review. A message lost here leaves no trace at all, which makes it
+indistinguishable from a quiet week.
+
+The list lives in code as `ledger.normalize.TRIGGER_PHRASES` — the same
+spellings the normalizer folds to `SAR` — and `tests/verify_ingest_coverage.py`
+asserts every attested message contains at least one of them. Add a phrase
+there and here together; the test is what stops the two drifting again.
 
 Create one Message automation per phrase, **Run Immediately**, notifications
 off. Overlapping filters are harmless: a message matching two fires twice, and

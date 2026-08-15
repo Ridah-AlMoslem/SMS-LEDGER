@@ -232,13 +232,21 @@ async def parse_tick(x_cron_secret: str = Header(default=""), limit: int = 50) -
         raise HTTPException(401, "unauthorized")
 
     counts = {"claimed": 0, "parsed": 0, "ignored": 0, "review": 0, "failed": 0,
-              "legs": 0, "topup_pairs": 0, "alerts": 0}
+              "parked": 0, "legs": 0, "topup_pairs": 0, "alerts": 0}
 
     with store.connect() as conn:
         identifiers, slug_to_id = store.load_account_map(conn)
         # Templates derived from the review screen, tried ahead of the code
         # ones so a correction actually takes effect (§10.7).
         templates = store.load_templates(conn)
+
+        # Before claiming anything: retire rows this tick has already failed to
+        # finish MAX_ATTEMPTS times. Without it they are re-claimed forever and
+        # stay invisible — in no ledger and in no review queue. See
+        # db.park_exhausted for why record_failure does not cover this.
+        counts["parked"] = store.park_exhausted(conn)
+        conn.commit()
+
         claimed = store.claim_pending(conn, limit)
         conn.commit()
         counts["claimed"] = len(claimed)

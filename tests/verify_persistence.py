@@ -238,6 +238,63 @@ def main():
         check("parks as failed after 3 attempts",
               conn.execute("SELECT status FROM raw_messages").fetchone()["status"], "failed")
 
+        print("\n[10] A TICK THAT NEVER FINISHES ALSO PARKS")
+        # [9] covers the message that RAISES. This covers the one that does not:
+        # the tick is killed between the claim and the outcome — function
+        # timeout, pg_net cancelling at 25s, a crash in the post-loop passes —
+        # so `record_failure` never runs and the row keeps its 'processing'
+        # status with last_error NULL. [8] then hands it straight back on the
+        # next tick, forever.
+        #
+        # That row is invisible: 'processing' is in no ledger and in no review
+        # queue, so the message appears simply not to exist. This is the state
+        # an AlRajhi cashback message was suspected of sitting in, and the
+        # reason it could not be told apart from one that never arrived.
+        reset(conn)
+        ingest(conn, *SALARY, datetime(2026, 6, 25, 14, 4, tzinfo=UTC))
+        conn.commit()
+        for _ in range(store.MAX_ATTEMPTS):
+            store.claim_pending(conn, 50)
+            # No record_outcome, no record_failure — the process simply died.
+            conn.execute(
+                "UPDATE raw_messages SET last_attempt_at = now() - interval '11 minutes'")
+            conn.commit()
+        row = conn.execute("SELECT status, attempts FROM raw_messages").fetchone()
+        check("it really is stuck in processing", row["status"], "processing")
+        check("having been claimed MAX_ATTEMPTS times",
+              row["attempts"], store.MAX_ATTEMPTS)
+
+        check("park_exhausted retires exactly that row", store.park_exhausted(conn), 1)
+        conn.commit()
+        row = conn.execute("SELECT status, last_error FROM raw_messages").fetchone()
+        check("as failed, so the review queue lists it", row["status"], "failed")
+        check("with an error that names the cause, not a blank",
+              "without completing" in (row["last_error"] or ""), True)
+        check("and claim_pending stops handing it back",
+              len(store.claim_pending(conn, 50)), 0)
+        conn.commit()
+
+        # The dangerous case, and the reason `park_exhausted` needs BOTH guards:
+        # a row on its MAX_ATTEMPTS-th claim that a tick is working on RIGHT
+        # NOW. On the attempts count alone it qualifies for parking, so parking
+        # it here would mark a message failed while it is being parsed
+        # successfully — and the tick would then write an outcome over a row it
+        # no longer owns. Only the age of last_attempt_at separates the two.
+        reset(conn)
+        ingest(conn, *SALARY, datetime(2026, 6, 25, 14, 4, tzinfo=UTC))
+        conn.execute("UPDATE raw_messages SET attempts = %s", (store.MAX_ATTEMPTS - 1,))
+        conn.commit()
+        store.claim_pending(conn, 50)
+        conn.commit()
+        check("the row is exhausted on attempts",
+              conn.execute("SELECT attempts FROM raw_messages").fetchone()["attempts"],
+              store.MAX_ATTEMPTS)
+        check("but a claim still in flight is left alone", store.park_exhausted(conn), 0)
+        conn.commit()
+        check("and stays with the tick that holds it",
+              conn.execute("SELECT status FROM raw_messages").fetchone()["status"],
+              "processing")
+
     print()
     if all(checks):
         print("=" * 70)

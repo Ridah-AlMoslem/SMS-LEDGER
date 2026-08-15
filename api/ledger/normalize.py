@@ -16,6 +16,22 @@ CUR_ARABIC = re.compile(r"(?<![\u0600-\u06FF])(?:ر\.س|ريال|رس)(?![\u0600
 ARABIC = re.compile(r"[؀-ۿ]")
 LATIN = re.compile(r"[A-Za-z]")
 
+# The phrases the phone's Message-Contains automations trigger on (DEPLOY §4).
+#
+# It is the SAME list of currency spellings the two regexes above fold to
+# `SAR`, and keeping it here rather than only in prose is the point: the filter
+# on the phone decides what the parser is ever allowed to see. A spelling the
+# normalizer knows but no automation matches is a format that parses perfectly
+# and never arrives — no row in `raw_messages`, so nothing to parse, nothing to
+# review, and no trace anywhere that a message existed at all. That is the most
+# expensive silence in the system, because it looks exactly like a quiet month.
+#
+# `رس` was missing when this list lived only in DEPLOY.md, which cost STC's
+# `بـ:55 رس` and `59.00 رس` — two attested formats with no other currency token
+# in them. tests/verify_ingest_coverage.py now pins every attested message
+# against this tuple, so the next such gap fails a test instead of a month.
+TRIGGER_PHRASES = ("SAR", "SR", "ريال", "ر.س", "رس")
+
 def strip_invisible(t): return t.translate(BIDI)
 
 def normalize(text: str) -> str:

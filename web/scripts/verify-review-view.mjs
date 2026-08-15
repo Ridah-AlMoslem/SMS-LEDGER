@@ -17,7 +17,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.join(HERE, "..", "src", "lib", "review.ts");
 
-const { groupByShape, parseRate, ingestionStale } = await import(pathToFileURL(SRC).href);
+const { groupByShape, parseRate, ingestionStale, parsingStalled, QUEUE_STALL_MS } =
+  await import(pathToFileURL(SRC).href);
 
 let n = 0;
 const check = (name, fn) => {
@@ -124,6 +125,24 @@ console.log("\n[7] STALE INGESTION DETECTION");
     assert.equal(ingestionStale(new Date("2026-08-12T09:00:00Z"), now), false));
   check("never having received anything is not 'stale'", () =>
     assert.equal(ingestionStale(null, now), false));
+}
+
+console.log("\n[8] STALLED PARSING DETECTION");
+{
+  // The counterpart to [7], and the gap a real message fell through: a message
+  // that arrived and was never drained is `pending` or `processing`, and
+  // neither status appears in any list on this page. Ingestion reads healthy —
+  // a message DID arrive — the parse rate reads healthy, because it judges only
+  // messages that reached a verdict, and the message itself is nowhere.
+  const now = new Date("2026-08-12T12:00:00Z");
+  check("queued over 15 minutes means the tick is not draining", () =>
+    assert.equal(parsingStalled(new Date("2026-08-12T11:30:00Z"), now), true));
+  check("queued a moment ago is just the next tick's work", () =>
+    assert.equal(parsingStalled(new Date("2026-08-12T11:59:30Z"), now), false));
+  check("an empty queue is not a stall", () =>
+    assert.equal(parsingStalled(null, now), false));
+  check("the threshold sits well clear of the one-minute tick", () =>
+    assert.ok(QUEUE_STALL_MS >= 5 * 60 * 1000));
 }
 
 console.log(`\n${"=".repeat(60)}\nALL ${n} REVIEW-VIEW CHECKS PASS\n${"=".repeat(60)}`);

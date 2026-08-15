@@ -208,6 +208,27 @@ export function periodLabel(
   return `${from} – ${to}`;
 }
 
+/**
+ * The same period, short enough for a chart axis at 390px.
+ *
+ *   cycle: "Aug"        week: "9 Aug"
+ *
+ * A separate function rather than a truncation of `periodLabel`, because the
+ * full label is what makes the 25th–24th boundary unambiguous and an axis tick
+ * that says "August 2026 (25 Jul – 24 Aug)" is an axis tick nobody can read.
+ * The unambiguous version is one tap away in the tooltip; both come from here,
+ * so they cannot disagree about which cycle is August.
+ */
+export function shortLabel(
+  grain: Grain,
+  anchor: CivilDate,
+  s: PeriodSettings = DEFAULT_SETTINGS,
+): string {
+  const { start } = periodBounds(grain, anchor, s);
+  if (grain === "cycle") return monthShort(periodEnd(start, s));
+  return `${parse(start).day} ${monthShort(start)}`;
+}
+
 /* ---------------------------------------------------------------- periods */
 
 /**

@@ -15,6 +15,12 @@
 import { sql } from "drizzle-orm";
 
 import { getDb } from "@/db";
+import {
+  IS_EARNED_SQL,
+  IS_EXPENSE_SQL,
+  IS_PASSIVE_SQL,
+  IS_UNCATEGORIZED_SQL,
+} from "@/db/predicates";
 import type { CivilDate, Grain } from "@/lib/periods";
 
 /**
@@ -25,34 +31,15 @@ import type { CivilDate, Grain } from "@/lib/periods";
  * worked example overstates expense by nearly 7× when a single clause is
  * dropped, and the wrong figure is entirely plausible. One chart quietly
  * disagreeing with the total above it is the failure this prevents.
+ *
+ * The text lives in `db/predicates.ts` so the verification scripts — which run
+ * raw SQL against PGlite and cannot import a database client — assert the same
+ * clauses the app runs rather than a copy of them.
  */
-const OWNED_MONEY_MOVING = sql`NOT is_internal_transfer AND NOT excluded_from_analytics`;
-
-/**
- * Excludes internal transfers (moving your own money is not spending), card
- * payments (the purchase was already counted — counting both inflates spending
- * up to 2×) and loan payments (only the interest is expense; the principal
- * moves net worth). Declined authorisations never happened.
- */
-export const IS_EXPENSE = sql`direction = 'debit'
-  AND ${OWNED_MONEY_MOVING}
-  AND type NOT IN ('card_payment', 'loan_payment')
-  AND state <> 'declined'`;
-
-/** Salary and the like. income_class distinguishes it further on the row. */
-export const IS_EARNED = sql`direction = 'credit'
-  AND ${OWNED_MONEY_MOVING} AND type = 'income'`;
-
-/**
- * Profit and cashback accrual. §6: "Profit must be counted as income — it's
- * not optional. Exclude it and the master invariant breaks, because net worth
- * rose by money that never appeared in your income figure."
- */
-export const IS_PASSIVE = sql`direction = 'credit'
-  AND ${OWNED_MONEY_MOVING} AND type = 'profit'`;
-
-/** §11.2 — a first-class category. Hiding it makes every other number wrong. */
-export const IS_UNCATEGORIZED = sql`category_id IS NULL AND ${IS_EXPENSE}`;
+export const IS_EXPENSE = sql.raw(IS_EXPENSE_SQL);
+export const IS_EARNED = sql.raw(IS_EARNED_SQL);
+export const IS_PASSIVE = sql.raw(IS_PASSIVE_SQL);
+export const IS_UNCATEGORIZED = sql.raw(IS_UNCATEGORIZED_SQL);
 
 export type PeriodTotals = {
   /** §6 — debits that are genuinely money leaving. */

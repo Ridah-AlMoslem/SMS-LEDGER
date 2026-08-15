@@ -22,10 +22,81 @@
     monospace;
 }
 
+/* Chart colour. Every fill, stroke and axis in a chart names one of these and
+   never a literal hex, so light and dark are one definition rather than a
+   `prefers-color-scheme` branch inside every component. SVG attributes accept
+   `var()`, so recharts reads them directly.
+
+   Provenance, because none of these were eyeballed:
+
+   - `--chart-in` / `--chart-out` are the brand pair from `lib/brand.ts`,
+     stepped for the light surface exactly the way <Money> already steps it
+     (emerald-600 / rose-600 on white, emerald-400 / rose-400 on black). The
+     brand values themselves fall below 3:1 on white; the darker step keeps the
+     hue and clears it.
+   - `--chart-1..6` are a fixed-order categorical palette, assigned by series
+     identity and never cycled. Validated for the OKLCH lightness band, the
+     chroma floor, protan/deutan separation (worst adjacent pair ΔE 9.1 light /
+     8.4 dark) and the normal-vision floor (19.6 / 19.3) against these two
+     surfaces. Three of the light steps sit below 3:1, which is why every chart
+     using them ships a legend with the values on it.
+   - `--chart-heat-1..4` is a sequential ramp on the debit hue — one hue,
+     monotone lightness, ΔL ≥ 0.06 per step, light end clearing 2:1 on its
+     surface. Magnitude is not identity, so it is a ramp and not six colours. */
+:root {
+  --chart-in: #059669;
+  --chart-out: #e11d48;
+
+  --chart-1: #2a78d6;
+  --chart-2: #eb6834;
+  --chart-3: #1baf7a;
+  --chart-4: #eda100;
+  --chart-5: #e87ba4;
+  --chart-6: #008300;
+
+  --chart-heat-1: #fb7185;
+  --chart-heat-2: #e11d48;
+  --chart-heat-3: #be123c;
+  --chart-heat-4: #881337;
+
+  /* A day with no spending is a fact, not a low value: it gets the rest tone
+     rather than the bottom of the ramp. */
+  --chart-heat-0: #f1f1f0;
+
+  --chart-grid: #e6e6e3;
+  --chart-axis: #898781;
+  /* Secondary ink, for a mark that carries no identity of its own — the net
+     line over the in/out bars. Not the brand pair: net is neither. */
+  --chart-ink: #52514e;
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+
+    --chart-in: #34d399;
+    --chart-out: #fb7185;
+
+    --chart-1: #3987e5;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+    --chart-4: #c98500;
+    --chart-5: #d55181;
+    --chart-6: #008300;
+
+    /* The ramp's anchor flips with the surface: on black, more spend is
+       brighter. Reusing the light ramp here would make the heaviest days the
+       hardest to see. */
+    --chart-heat-1: #be123c;
+    --chart-heat-2: #f43f5e;
+    --chart-heat-3: #fb7185;
+    --chart-heat-4: #fecdd3;
+    --chart-heat-0: #1c1c1b;
+
+    --chart-grid: #262625;
+    --chart-axis: #898781;
+    --chart-ink: #c3c2b7;
   }
 }
 

@@ -54,6 +54,43 @@ reads Postgres, so a tab with no loading file appears to do nothing until the
 server answers. Follow the existing ones: static `<h1>` first so the page
 announces which tab you landed on, then `<PageLoader>`.
 
+## Charts: one palette, defined in CSS, validated once
+
+Every chart colour is a custom property in `globals.css` — `--chart-in`,
+`--chart-out`, `--chart-1..6`, `--chart-heat-1..4`, `--chart-grid`,
+`--chart-axis`, `--chart-ink` — and `src/lib/chart-theme.ts` is the TypeScript
+handle on them. SVG attributes take `var()`, so recharts reads them directly and
+light/dark is one definition instead of a `prefers-color-scheme` branch inside
+every component. **Do not put a hex in a chart.**
+
+- **`seriesColorAt(i)` assigns slots in order and never skips.** The palette is
+  validated for *adjacent* pairs — the case where two bands of a stack touch —
+  and the same six colours fail an all-pairs check at ΔE 1.6 under deuteranopia.
+  So position decides the slot, one page decides the order once, and any second
+  chart on that page is handed the same map or drops colour entirely (the cycle
+  flow list has no swatches for exactly this reason). Past six series, fold the
+  rest into a grey "Other" (`foldToOther`).
+- **The `categories.color` column is not used for charts.** Those seeded values
+  were picked per family and several adjacent pairs collapse under protanopia. A
+  settings screen that offers colour editing has to validate against the same
+  checks before those values can drive a chart.
+- **Magnitude is a ramp, not a palette.** The heatmap uses one hue — the debit
+  hue — in four monotone steps, with a separate rest tone for days with no
+  spending. A day with nothing on it is a fact, not a low value.
+- **11px is the floor for a tick label** (`AXIS_FONT`). At 390px a chart that
+  does not fit drops or rotates ticks; it never shrinks the type.
+- **Every multi-series chart ships a legend and a table view.** Identity is
+  never carried by colour alone, three of the light-mode steps sit below 3:1 on
+  white, and the table is the only form of a chart a screen reader can read.
+  `ChartFrame` takes both; put the table in the expanded sheet.
+- **Partial buckets are hatched and labelled "N of 7 days"** (§5.3). A one-day
+  bar beside seven-day bars reads as a spending collapse that never happened.
+
+Colours were chosen with the validator in the `dataviz` skill (OKLCH lightness
+band, chroma floor, protan/deutan ΔE, normal-vision floor, contrast vs each
+surface). If you change one, re-run it for both surfaces — `#ffffff` and
+`#0a0a0a` — rather than eyeballing the result.
+
 ## The mark lives in two places, and a test keeps them honest
 
 - `brand/build-icons.py` generates `icon.svg`, `favicon.ico`, `apple-icon.png`

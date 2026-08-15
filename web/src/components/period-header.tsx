@@ -14,7 +14,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useRef } from "react";
 
 import {
   DEFAULT_GRAIN,
@@ -78,8 +78,39 @@ function PeriodHeaderInner() {
   const total = daysInPeriod(grain, period);
   const elapsed = daysElapsed(grain, period, now);
 
+  // Swipe steps the period, the same way the chevrons do. The header is the
+  // control that owns the selection, so the gesture belongs to it rather than
+  // to the page: swiping the body of a scrolling dashboard would compete with
+  // the scroll, and a gesture that sometimes scrolls and sometimes changes the
+  // month is a gesture nobody trusts twice.
+  const touch = useRef<{ x: number; y: number } | null>(null);
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    touch.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+  };
+
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const from = touch.current;
+    touch.current = null;
+    if (!from) return;
+
+    const dx = e.changedTouches[0].clientX - from.x;
+    const dy = e.changedTouches[0].clientY - from.y;
+
+    // Horizontal, and decisively so. The vertical guard is what keeps a
+    // slightly-diagonal scroll from stepping the month underneath you.
+    if (Math.abs(dx) < 56 || Math.abs(dy) > Math.abs(dx) * 0.6) return;
+
+    // Swiping left pulls the next period in from the right, matching the
+    // direction the content moves rather than the direction of the thumb.
+    router.push(href(grain, stepPeriod(grain, period, dx < 0 ? 1 : -1)), { scroll: false });
+  };
+
   return (
-    <header className="sticky top-0 z-30 -mx-6 mb-5 border-b border-black/5 bg-[var(--background)]/85 px-6 py-2.5 backdrop-blur-md dark:border-white/10">
+    <header
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
+      className="sticky top-0 z-30 -mx-6 mb-5 border-b border-black/5 bg-[var(--background)]/85 px-6 py-2.5 backdrop-blur-md dark:border-white/10">
       <div className="mx-auto flex w-full max-w-2xl items-center gap-2">
         <Link
           href={href(grain, stepPeriod(grain, period, -1))}

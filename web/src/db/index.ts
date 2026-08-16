@@ -18,6 +18,19 @@ let cached: Db | null = null;
  * Supabase pools connections externally, so `max: 1` here is right for
  * serverless: each invocation is short-lived, and a pool per invocation
  * exhausts the free-tier connection limit quickly.
+ *
+ * The rule that keeps `max: 1` workable is at the call sites, not here: a
+ * `Promise.all` of independent queries dispatches them onto one pooler
+ * connection in a single tick, and the transaction pooler answers the first two
+ * and then stalls the rest permanently — no error, no timeout, and since this
+ * client is a module-level singleton, every later request in the process hangs
+ * behind them. Home was rebuilt around that once already; the ledger's facets
+ * were rebuilt around it again.
+ *
+ * Widening the pool is not the fix and was measured not to be: 12 concurrent
+ * statements stall identically at `max: 4`. Sequential awaits and combined
+ * statements are the fix, and they cost one round trip each — see
+ * `db/aggregates.ts`, `db/home.ts` and `ledgerFacets` in `db/ledger.ts`.
  */
 export function getDb(): Db {
   if (cached) return cached;

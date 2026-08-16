@@ -24,6 +24,88 @@ way: change the events, let the figure follow. The same test file is where the
 refused without a credit limit — because both of those, read backwards, move
 net worth by roughly a credit limit.
 
+## Never `Promise.all` two queries
+
+Home was rebuilt around this once (`b09932e`) and the ledger's facets had to be
+rebuilt around it again, so it is worth stating as a rule rather than as a war
+story: **a `Promise.all` of independent queries hangs the entire app.**
+
+Dispatching several statements onto one transaction-pooler connection in a
+single tick gets the first two answered and the rest stalled permanently — no
+error, no timeout, still hung at 25 seconds. `getDb()` is a module-level
+singleton, so everything behind it hangs too, and the symptom is Home, Ledger
+and Accounts all sitting on their loading spinner with nothing in any log. It
+does not reproduce locally against PGlite, which is in-process and has no pooler
+in front of it.
+
+Concurrency *across requests* is fine — those queue on the connection rather
+than pipelining onto it. It is the fan-out inside one render that kills it.
+
+So: one combined statement, or sequential `await`s. `db/aggregates.ts` embeds
+the cycle totals twice in one SELECT, `db/home.ts` composes the whole page into
+one, and `ledgerFacets` returns its three lists as three `json_agg` sub-selects.
+Widening the pool is not the alternative and was measured not to be — 12
+concurrent statements stall identically at `max: 4`.
+
+## Writing a field by hand locks it, and only `db/` may write
+
+Every mutation on a transaction goes through `src/db/ledger-mutations.ts`, which
+takes the db as an argument and imports nothing from `next/*`. The server
+actions in `app/ledger/actions.ts` are arguments-in, result-out and hold no
+logic at all, because a server action cannot be called from a test file without
+a Next runtime around it — anything that lives there is effectively unverified.
+
+What must not be reimplemented anywhere else:
+
+- **An edit adds its column to `locked_fields`, in the same statement.** §9.4 is
+  the promise that an improved parser cannot revert your corrections, and
+  `db/replay.ts` enforces it on the way back in. A bulk action locks too; it is
+  the edit most likely to be undone en masse. A *rule* does not lock — a lock
+  means a person decided, and a rule is not a person.
+- **`locked_fields` is a JSON array, never an object.** The guard is
+  `locked_fields ? 'category_id'`, and `?` tests keys on an object — a row
+  storing `{"category_id": true}` would read as locked to one query and unlocked
+  to another. Migration 0008 has the check constraint.
+- **Deleting marks the raw message `ignored`/`user`.** Otherwise the next tick
+  re-derives the transaction and the delete undoes itself (§9.4.3).
+- **Editing an amount is a balance change.** The trigger in migration 0008
+  recomputes the account and re-derives its open reconciliation alerts, because
+  balances here are derived and the screen would otherwise state a figure the
+  ledger no longer supports. It deliberately does not fire on INSERT — the
+  parser batches — so `createManual` calls `refresh_reconciliation` itself.
+
+`npm run test:ledger` runs all of that against real Postgres, including the
+three §9.4 replay guarantees and that a rule's dry-run count is exactly what
+applying it changes.
+
+## Period-scoped lists filter on the bucket, never on a date range
+
+`effective_cycle(posted_at, cycle_override) = $1`, the same way `db/aggregates.ts`
+does — not `posted_at BETWEEN start AND end`. §5.6 puts an early salary in the
+cycle it *funds*, so the August cycle contains a 23 July transaction; a BETWEEN
+drops it and the list disagrees with the total on the screen you arrived from by
+one salary. Weeks are the opposite and equally fixed: `week_start(local_date())`
+ignores the override, because a week is a literal date range.
+
+There is also only ever **one date scope on screen**. The Ledger's period
+stepper scopes it by default; an explicit range in the filters replaces it and
+`page.tsx` hides the stepper. A stepper that no longer scopes what is beneath it
+invites the reader to believe a total moved because they stepped back a month.
+
+## Optimistic edits roll back visibly
+
+TanStack Query is mounted per screen (`components/query-provider.tsx`), not in
+the layout — Ledger is the only page that edits. Every mutation in
+`app/ledger/use-ledger.ts` snapshots the cache, patches it, and on failure puts
+the old value back *and* raises a message. Both halves: a row that snaps back
+with no explanation reads as a rendering bug, and a message with no snap-back
+leaves a figure on screen that is not in the database.
+
+Server actions return `{ok: false, error}` rather than throwing, so every
+`mutationFn` re-throws it. Miss that and React Query treats a refused edit as a
+success and leaves the optimistic value in place — the silent-drop failure the
+whole arrangement exists to prevent.
+
 ## Waiting states: use `<Loader>`, never a new spinner
 
 `src/components/ui/loader.tsx` is the only waiting indicator in this app. It is

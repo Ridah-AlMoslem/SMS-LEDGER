@@ -1,29 +1,47 @@
 import { PeriodHeader } from "@/components/period-header";
+import { QueryProvider } from "@/components/query-provider";
 import { EmptyState } from "@/components/ui/empty-state";
-import { Money } from "@/components/ui/money";
-import { periodTransactions } from "@/db/aggregates";
-import { weekdayTime } from "@/lib/format";
+import { type Facets, type LedgerPage as Page, ledgerFacets, ledgerPage } from "@/db/ledger";
+import { dateScope, readFilters } from "@/lib/ledger-filters";
 import { readSelection } from "@/lib/period-params";
-import { periodLabel } from "@/lib/periods";
+
+import { LedgerView } from "./ledger-view";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Every transaction in the selected period.
+ * The ledger — milestone 8 (SPEC §12), and the CRUD surface for everything the
+ * parser produces.
  *
- * Scoped through `v_categorized_amounts`, the same view the totals on Home
- * read, so the list and the summary can never disagree about which
- * transactions belong to "this month".
+ * The server renders the first page and the filter facets; the client owns
+ * paging and every edit, through TanStack Query. That split is deliberate: the
+ * list has to be on screen at first paint (it is the page), and the edits have
+ * to be optimistic with a visible rollback (it is a phone).
  *
- * Filters, search, editing and splits are milestone 8 (§12); this is the list
- * they will hang off.
+ * There is exactly ONE date scope on screen at a time. By default it is the
+ * period stepper, which is how you arrive here from Home still looking at
+ * August. Setting an explicit range in the filters replaces it and hides the
+ * stepper — a control that appears to scope a screen it does not scope invites
+ * the reader to believe a total moved because they stepped back a month, and
+ * that is a worse failure than having no stepper at all.
  */
 export default async function LedgerPage(props: PageProps<"/ledger">) {
-  const { grain, period } = readSelection(await props.searchParams);
+  const params = await props.searchParams;
 
-  let rows: Awaited<ReturnType<typeof periodTransactions>>;
+  const { grain, period } = readSelection(params);
+  const filters = readFilters(params);
+  const scope = dateScope(filters, grain, period);
+
+  let page: Page;
+  let facets: Facets;
   try {
-    rows = await periodTransactions(grain, period);
+    // Sequential, NOT Promise.all. `getDb()` holds one connection against the
+    // transaction pooler, and pipelining a third statement onto it stalls
+    // forever — the layout is already issuing one of its own for the review
+    // badge while this renders. Two round trips is the cost of a page that
+    // loads at all; see the note in `db/index.ts`.
+    page = await ledgerPage(filters, scope);
+    facets = await ledgerFacets(scope);
   } catch (err) {
     return (
       <main>
@@ -39,70 +57,16 @@ export default async function LedgerPage(props: PageProps<"/ledger">) {
   }
 
   return (
-    <main>
-      <PeriodHeader />
-      <div className="flex items-baseline justify-between">
-        <h1 className="text-xl font-semibold">Ledger</h1>
-        <p className="text-xs opacity-50">
-          {rows.length > 0 ? `${rows.length} shown` : periodLabel(grain, period)}
-        </p>
-      </div>
+    // Room at the bottom for the floating add button, which would otherwise sit
+    // over the last transaction of the last day.
+    <main className="pb-20">
+      {scope.source === "period" && <PeriodHeader />}
 
-      <div className="mt-5">
-        {rows.length === 0 ? (
-          <EmptyState
-            title={`Nothing in this ${grain}`}
-            body={
-              <>
-                {periodLabel(grain, period)} has no transactions. Step back with the arrows above,
-                or switch grain.
-              </>
-            }
-          />
-        ) : (
-          <ul className="divide-y divide-black/10 dark:divide-white/10">
-            {rows.map((t) => {
-              const credit = t.direction === "credit";
-              // Can be an Arabic biller name or a Latin merchant string;
-              // .sms-body isolates the bidi run so a right-to-left name cannot
-              // reorder the row around it.
-              //
-              // `description` carries rows that were never parsed from a
-              // message — a balance corrected by hand names itself there, and
-              // without it the row would read "adjustment" and explain nothing.
-              const label = t.merchant ?? t.biller ?? t.description ?? t.type;
+      <h1 className="text-xl font-semibold">Ledger</h1>
 
-              return (
-                <li key={t.id} className="flex items-center gap-4 py-3">
-                  <div className="min-w-0 flex-1">
-                    <p className="sms-body truncate font-medium">{label}</p>
-                    <p className="mt-0.5 truncate text-xs opacity-60">
-                      {weekdayTime(t.postedAt)} · {t.accountName}
-                      {t.categoryName ? ` · ${t.categoryName}` : ""}
-                      {t.isInternal ? " · internal" : ""}
-                      {t.type === "adjustment" ? " · corrected by hand" : ""}
-                    </p>
-                  </div>
-                  <Money
-                    value={credit ? Number(t.amount) : -Number(t.amount)}
-                    tone={credit ? "auto" : "none"}
-                    sign={credit ? "always" : "auto"}
-                    className="shrink-0 text-sm"
-                  />
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </div>
-
-      <p className="mt-8 text-xs opacity-50">
-        Internal transfers are listed but excluded from spending totals. A transaction marked
-        &ldquo;Split&rdquo; is divided across several categories; it counts once here and once in
-        total, split across categories in the breakdowns. A balance corrected by hand appears here
-        as an adjustment — it moves the account and net worth, and counts as neither income nor
-        spending.
-      </p>
+      <QueryProvider>
+        <LedgerView initialPage={page} facets={facets} filters={filters} scope={scope} />
+      </QueryProvider>
     </main>
   );
 }

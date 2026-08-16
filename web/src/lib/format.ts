@@ -64,3 +64,75 @@ export function dayMonthYear(d: Date, s: PeriodSettings = DEFAULT_SETTINGS): str
     s.timezone,
   ).format(d);
 }
+
+/* ------------------------------------------------- editing an instant */
+
+/**
+ * An instant as `<input type="datetime-local">` wants it: `2026-08-13T09:30`,
+ * with the wall clock reading in the configured zone.
+ *
+ * The browser's own zone is wrong here. A phone in another country editing a
+ * transaction would be shown a time three hours from the one printed in the
+ * SMS, and would save a different instant than the one it displayed.
+ */
+export function toLocalInput(d: Date, s: PeriodSettings = DEFAULT_SETTINGS): string {
+  const parts = formatter(
+    "en-CA",
+    {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      // h23 rather than hour12:false: some ICU versions render midnight as 24
+      // under the latter, and "2026-08-13T24:00" is not a value any input
+      // accepts.
+      hourCycle: "h23",
+    },
+    s.timezone,
+  )
+    .formatToParts(d)
+    .reduce<Record<string, string>>((acc, p) => {
+      acc[p.type] = p.value;
+      return acc;
+    }, {});
+
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+const LOCAL_INPUT = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
+
+/**
+ * The inverse: a wall clock in the configured zone back to an instant.
+ *
+ * Read the offset from the zone rather than hardcoding +03:00. Riyadh has no
+ * DST — §13 lists "DST-free but timezone-sensitive midnight transactions" as
+ * its own fixture — so the offset taken at the approximate instant is the
+ * offset at the true one, and the two-step resolution below is exact. In a zone
+ * with DST it would be ambiguous for one hour a year, which is why the offset
+ * is derived instead of assumed.
+ */
+export function fromLocalInput(
+  value: string,
+  s: PeriodSettings = DEFAULT_SETTINGS,
+): Date | null {
+  if (!LOCAL_INPUT.test(value)) return null;
+
+  const asIfUtc = new Date(`${value}:00Z`);
+  if (Number.isNaN(asIfUtc.getTime())) return null;
+
+  return new Date(asIfUtc.getTime() - offsetMinutes(asIfUtc, s.timezone) * 60_000);
+}
+
+/** Minutes east of UTC in `tz` at `at`. Read from Intl, never from a table. */
+function offsetMinutes(at: Date, tz: string): number {
+  const name = formatter("en-GB", { timeZoneName: "longOffset" }, tz)
+    .formatToParts(at)
+    .find((p) => p.type === "timeZoneName")?.value;
+
+  const match = /GMT([+-])(\d{2}):(\d{2})/.exec(name ?? "");
+  if (!match) return 0;
+
+  const sign = match[1] === "-" ? -1 : 1;
+  return sign * (Number(match[2]) * 60 + Number(match[3]));
+}

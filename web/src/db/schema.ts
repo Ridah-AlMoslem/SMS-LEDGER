@@ -430,7 +430,16 @@ export const transactions = pgTable(
     /** §9.4 — a field you edited by hand survives replay untouched. This is
      *  the highest-consequence guarantee in the system. */
     origin: origin("origin").notNull().default("parsed"),
-    lockedFields: jsonb("locked_fields"),
+    /**
+     * Column names, as a JSON array: `["category_id","merchant_raw"]`.
+     *
+     * An array specifically, and a check constraint in migration 0008 enforces
+     * it. Replay's guard is `NOT (locked_fields ? 'category_id')`, and `?` on a
+     * jsonb OBJECT tests its keys — so `{"category_id": true}` would read as
+     * locked to that query and as unlocked to anything checking membership,
+     * which is precisely the disagreement this column exists to rule out.
+     */
+    lockedFields: jsonb("locked_fields").$type<string[]>(),
     matchedRuleId: uuid("matched_rule_id"),
 
     reportedBalance: numeric("reported_balance", { precision: 14, scale: 2 }),
@@ -449,6 +458,10 @@ export const transactions = pgTable(
     index("transactions_card_posted_idx").on(t.cardLast4, t.postedAt),
     // Idempotency: one message, one transaction.
     unique("transactions_one_per_message").on(t.rawMessageId, t.accountId, t.direction),
+    check(
+      "transactions_locked_fields_is_array",
+      sql`${t.lockedFields} IS NULL OR jsonb_typeof(${t.lockedFields}) = 'array'`,
+    ),
   ],
 );
 

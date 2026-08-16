@@ -229,6 +229,41 @@ export function shortLabel(
   return `${parse(start).day} ${monthShort(start)}`;
 }
 
+/**
+ * One civil date. "9 Aug", or "9 Aug 2025" once the year stops being obvious.
+ *
+ * A date, not a period — the ledger's date-range chips and day headers name a
+ * single day, and `shortLabel` would round it to the period containing it,
+ * which is how a filter comes to say something different from what it does.
+ */
+export function civilShort(
+  d: CivilDate,
+  now: Date = new Date(),
+  s: PeriodSettings = DEFAULT_SETTINGS,
+): string {
+  const { y, day } = parse(d);
+  const thisYear = parse(today(now, s)).y;
+  return `${day} ${monthShort(d)}${y === thisYear ? "" : ` ${y}`}`;
+}
+
+/**
+ * A day header in the ledger: "Today", "Yesterday", or "Sun 9 Aug".
+ *
+ * Today and yesterday are named rather than dated because that is how anyone
+ * reading a ledger on the day thinks about them, and because a date that
+ * silently means today is a date you check against your phone's clock.
+ */
+export function dayLabel(
+  d: CivilDate,
+  now: Date = new Date(),
+  s: PeriodSettings = DEFAULT_SETTINGS,
+): string {
+  const at = today(now, s);
+  if (d === at) return "Today";
+  if (d === addDays(at, -1)) return "Yesterday";
+  return `${weekday(d)} ${civilShort(d, now, s)}`;
+}
+
 /* ---------------------------------------------------------------- periods */
 
 /**

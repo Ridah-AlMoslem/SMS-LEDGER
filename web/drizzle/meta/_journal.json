@@ -57,6 +57,13 @@
       "when": 1786704921388,
       "tag": "0007_editable_accounts",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786780000000,
+      "tag": "0008_ledger_crud",
+      "breakpoints": true
     }
   ]
 }

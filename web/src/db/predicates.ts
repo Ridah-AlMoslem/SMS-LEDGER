@@ -53,3 +53,34 @@ export const IS_PASSIVE_SQL = `direction = 'credit'
 
 /** §11.2 — a first-class category. Hiding it makes every other number wrong. */
 export const IS_UNCATEGORIZED_SQL = `category_id IS NULL AND ${IS_EXPENSE_SQL}`;
+
+/**
+ * §6 applied to both directions at once — the ledger's day subtotal.
+ *
+ * `IS_EXPENSE` is the debit half of this, and a day subtotal needs the credit
+ * half on the same terms or the two sides of one day are counted by different
+ * rules. Every exclusion is the same one and for the same reason: an internal
+ * transfer is your own money moving, a card or loan payment settles spending
+ * that was already counted at the purchase, and a declined authorisation never
+ * happened.
+ *
+ * Refunds are IN, on purpose. A refund is a negative expense in its original
+ * category (§7.3), so a day that received one genuinely did have less money
+ * leave it, and a subtotal that dropped refunds would disagree with every
+ * category total on the same screen.
+ *
+ * Written without a table alias like everything else here, and used against
+ * `transactions` rather than the view — the column names are identical on both,
+ * so this is only safe inside a subquery over a single relation. The ledger
+ * list applies it to a CTE of exactly those columns for that reason;
+ * `accounts.type` would otherwise make `type` ambiguous and the query would
+ * fail to run, which is the good outcome.
+ */
+export const COUNTS_IN_FLOW_SQL = `${OWNED_MONEY_MOVING}
+  AND type NOT IN ('card_payment', 'loan_payment')
+  AND state <> 'declined'`;
+
+/** Credit adds, debit subtracts. The same sign rule `recompute_balances` uses,
+ *  so a day subtotal and a balance movement can never disagree about which way
+ *  the money went. */
+export const SIGNED_AMOUNT_SQL = `CASE WHEN direction = 'credit' THEN amount ELSE -amount END`;

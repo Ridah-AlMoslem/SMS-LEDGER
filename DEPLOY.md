@@ -61,6 +61,24 @@ connecting the git repository — that is what gives you a build per push later.
 config is valid and the account has the Services permission — before anything
 has been built.
 
+**The rewrites name the parser's four routes, not `/api/*`.** Both services
+answer under `/api/`, and the rewrite decides which one — the filesystem does
+*not* get consulted first, whatever the single-service behaviour suggests. So a
+catch-all `/api/(.*)` → `api` silently swallows every route the web service owns:
+`/api/ledger` (the ledger's infinite scroll), `/api/ledger/[id]` (the detail
+sheet), `/api/ledger/export` and `/api/plan-tick` all returned FastAPI's
+`{"detail":"Not Found"}` in production while working perfectly in `next dev`,
+where there is no second service to lose to.
+
+It is written the way round it is for a reason. The parser's surface is closed
+and known — `/api/ingest`, `/api/parse-tick`, `/api/templates/derive`,
+`/api/health` — and the web service's is the one that grows. Listing the parser's
+four means a new Next route handler works the day it is written; listing the
+web's would mean every future one 404s to Python until someone remembers this
+file. Do not "simplify" it back to `/api/(.*)`.
+
+Adding a route to `api/main.py` therefore also means adding a line here.
+
 `npx`, not `npm i -g`. A global install writes to `/usr/local/lib/node_modules`,
 which your user does not own on a default macOS setup, and the fix people reach
 for — `sudo npm i -g` — leaves root-owned files in a directory npm then expects
@@ -403,22 +421,20 @@ owe a carry rather than assuming it ran yesterday, which is what makes it safe
 on a project Supabase has paused. It is not a keep-alive — that is the parse
 tick's job, and it stays scheduled.
 
-**Check.** This one is worth curling by hand before trusting the schedule,
-because `/api/*` is also the parser service's prefix — `vercel.json` rewrites
-`/api/(.*)` to it, after the filesystem check that finds this route, the same
-way `/api/ledger` already works:
+**Check.** Worth curling by hand before trusting the schedule, because this path
+lives on the web service while `/api/` is also the parser's prefix — see the
+rewrite note in step 1:
 
 ```bash
 curl -s -X POST https://<project>.vercel.app/api/plan-tick \
   -H "X-Cron-Secret: $CRON_SECRET"
-# {"now":"2026-08-17","closed":[],"detection":{"scanned":39,"detected":5,...}}
+# {"now":"2026-08-17","closed":[],"detection":{"scanned":41,"detected":3,...}}
 ```
 
-A counts object is it working. A FastAPI `{"detail":"Not Found"}` means the
-rewrite won and the parser service answered instead — add an explicit
-`/api/plan-tick` rewrite to the `web` service ahead of the catch-all. A `401`
-means `CRON_SECRET` on Vercel and in Vault disagree, exactly as for the parse
-tick.
+A counts object is it working. A FastAPI `{"detail":"Not Found"}` means a rewrite
+sent it to the parser service — check `vercel.json` still names the parser's four
+routes rather than a `/api/(.*)` catch-all. A `401` means `CRON_SECRET` on Vercel
+and in Vault disagree, exactly as for the parse tick.
 
 ---
 

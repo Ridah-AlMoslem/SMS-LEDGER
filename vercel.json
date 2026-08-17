@@ -14,7 +14,10 @@
     }
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": { "service": "api" } },
+    { "source": "/api/ingest", "destination": { "service": "api" } },
+    { "source": "/api/parse-tick", "destination": { "service": "api" } },
+    { "source": "/api/templates/(.*)", "destination": { "service": "api" } },
+    { "source": "/api/health", "destination": { "service": "api" } },
     { "source": "/(.*)", "destination": { "service": "web" } }
   ]
 }

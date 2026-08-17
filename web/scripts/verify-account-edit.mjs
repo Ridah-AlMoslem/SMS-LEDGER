@@ -575,6 +575,111 @@ console.log("\n[14] A REFUSED EDIT CHANGES NOTHING AT ALL");
     assert.equal((await account("ar_card")).current_balance, "9000.00"));
 }
 
+console.log("\n[15] ONE-TAP BALANCE ENTRY CARRIES NO SETTINGS AT ALL (§3.3b)");
+{
+  // §3.3b's third compensating control. The control on screen is one field, so
+  // it submits one field: `draft: null` means the account keeps whatever it
+  // holds, read from the row this locks rather than from the page.
+  //
+  // This matters because the account being anchored this way is by definition
+  // the one nothing else verifies. A control that could revert `reconcilable`
+  // or a credit limit while recording a balance would be able to invert net
+  // worth from a button whose whole promise is that it only records a figure.
+  await pg.exec(`
+    UPDATE accounts
+       SET reconcilable = false, is_profit_bearing = true, profit_payout_day = 1,
+           name = 'SAIB current', sort_order = 7
+     WHERE slug = 'saib_current'
+  `);
+
+  const before = await account("saib_current");
+
+  const res = await applyAccountEdit(db, {
+    accountId: current.id,
+    draft: null,
+    targetBalance: "2,000.00",
+    note: "SAIB app, this morning",
+  });
+
+  assert.equal(res.ok, true, res.ok ? "" : res.error);
+
+  check("the balance is booked as an adjustment", () => {
+    assert.notEqual(res.outcome.adjustment, null);
+    assert.equal(res.outcome.adjustment.direction, "credit");
+  });
+  check("and NOTHING else is reported as changed", () =>
+    assert.deepEqual(Object.keys(res.outcome.changed), []));
+
+  const after = await account("saib_current");
+  check("the balance moved", () => assert.equal(after.current_balance, "2000.00"));
+  check("and every other column is exactly as it was", () => {
+    // `balance_as_of` is deliberately absent: it is a fact about the balance,
+    // and the entry is what makes it true as of now.
+    const moved = Object.keys(after).filter(
+      (k) => k !== "current_balance" && k !== "balance_as_of" &&
+             String(after[k]) !== String(before[k]),
+    );
+    assert.deepEqual(moved, []);
+  });
+  check("including the ones that decide what the figure means (§3.3a)", () => {
+    assert.equal(after.reconcilable, false);
+    assert.equal(after.is_profit_bearing, true);
+    assert.equal(after.profit_payout_day, 1);
+    assert.equal(after.name, "SAIB current");
+    assert.equal(after.sort_order, 7);
+    assert.equal(after.is_liability, false);
+    assert.equal(after.balance_semantics, "balance");
+  });
+
+  await recompute();
+  await acheck("and the parser's next tick still arrives at the typed figure", async () =>
+    assert.equal((await account("saib_current")).current_balance, "2000.00"));
+
+  await acheck("a manual snapshot anchors it from here (§3.3b control 3)", async () => {
+    const snaps = await rows(
+      `SELECT * FROM balance_snapshots WHERE account_id = '${current.id}' ORDER BY as_of DESC`,
+    );
+    assert.equal(snaps[0].source, "manual");
+    assert.equal(snaps[0].balance, "2000.00");
+  });
+
+  // Re-typing the figure already on record is not an edit. Without this every
+  // tap of the button would put an empty adjustment in the ledger.
+  const again = await applyAccountEdit(db, {
+    accountId: current.id,
+    draft: null,
+    targetBalance: "2000",
+    note: null,
+  });
+  check("recording the same figure books nothing", () => {
+    assert.equal(again.ok, true);
+    assert.equal(again.outcome.adjustment, null);
+  });
+}
+
+console.log("\n[16] A BALANCE ENTRY IS REFUSED ON AN ACCOUNT THAT WOULD INVERT (§3.3a)");
+{
+  // The account is left in the state §3.3a warns about — a card whose figure
+  // means available credit, with no limit to subtract it from. `toView` would
+  // read the headroom as the debt. Anchoring a balance onto that would make the
+  // inversion look freshly confirmed by hand, so the entry is refused with the
+  // reason rather than accepted quietly.
+  await pg.exec(`UPDATE accounts SET credit_limit = NULL WHERE slug = 'ar_card'`);
+
+  const res = await applyAccountEdit(db, {
+    accountId: card.id,
+    draft: null,
+    targetBalance: "9500.00",
+    note: null,
+  });
+
+  check("it is refused", () => assert.equal(res.ok, false));
+  check("and says which flag makes it unsafe", () =>
+    assert.match(res.error, /needs a credit limit/));
+  await acheck("the balance is untouched", async () =>
+    assert.equal((await account("ar_card")).current_balance, "9000.00"));
+}
+
 await pg.close();
 
 console.log(`\n${"=".repeat(60)}\nALL ${n} ACCOUNT-EDIT CHECKS PASS\n${"=".repeat(60)}`);

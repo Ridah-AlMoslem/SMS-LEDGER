@@ -37,6 +37,151 @@ export type Alert = {
   detectedAt: Date;
 };
 
+/* ---------------------------------------------- reconciliation state (§3.3b) */
+
+/**
+ * §3.3b — "reconciliation is a *capability flag*, not a guarantee", and the
+ * table there is per-account: AlRajhi full, Barq partial, STC weak, SAIB none.
+ *
+ * Measured rather than hardcoded. Writing `institution === "SAIB" → none` into
+ * the UI would state a fact about the templates as though it were a fact about
+ * the account, and it would go quietly stale the day a bank changes a message
+ * or a new template starts carrying a balance. What is actually knowable is in
+ * the ledger: every leg the parser wrote carries `reported_balance`, non-null
+ * exactly when the message printed one.
+ */
+export type ReconciliationLevel = "full" | "partial" | "weak" | "none";
+
+export type Coverage = {
+  /** Parsed legs on this account in the measured window. */
+  messages: number;
+  /** How many of them carried a balance the bank had printed. */
+  withBalance: number;
+  /** When the bank last stated one. */
+  lastReportedAt: Date | null;
+  /** When a person last entered one by hand — §3.3b's third compensating
+   *  control, and the only anchor a balance-less account will ever have. */
+  lastManualAt: Date | null;
+};
+
+export const NO_COVERAGE: Coverage = {
+  messages: 0,
+  withBalance: 0,
+  lastReportedAt: null,
+  lastManualAt: null,
+};
+
+export type Reconciliation = {
+  level: ReconciliationLevel;
+  /** Short, for a badge. Never reads as "verified" below `full`. */
+  label: string;
+  /** The sentence beneath it. Always says what is *not* checked. */
+  detail: string;
+  /** Share of messages carrying a balance, 0–1. null when nothing measured. */
+  share: number | null;
+  coverage: Coverage;
+};
+
+/** Every message states one — AlRajhi's card, on both purchases and payments. */
+const FULL_AT = 0.9;
+/** Some template does, routinely — Barq prints one on purchases only. */
+const PARTIAL_AT = 0.35;
+
+/**
+ * Below this, a share is an accident rather than a rate.
+ *
+ * Three legs of which three carried a balance is 100% coverage and no evidence
+ * at all, and "full" printed against it is precisely the claim §3.3b forbids:
+ * an account that has not earned a clean reconciliation must never look like
+ * one that has. So a small sample is capped at `weak` and the sentence says how
+ * small.
+ */
+const MIN_SAMPLE = 5;
+
+export function reconciliationOf(
+  account: { reconcilable: boolean },
+  coverage: Coverage = NO_COVERAGE,
+): Reconciliation {
+  const anchored = coverage.lastManualAt
+    ? " A balance you entered by hand anchors it from that point forward."
+    : " Enter a balance by hand to anchor it from today.";
+
+  // The bank never prints one. Not a coverage measurement at all — the flag
+  // says so up front, and SAIB holds the current account, the savings and the
+  // salary (§3.3b).
+  if (!account.reconcilable) {
+    return {
+      level: "none",
+      label: "Not checked against the bank",
+      detail: `No message from this bank states a balance, so nothing here has been verified against it.${anchored}`,
+      share: null,
+      coverage,
+    };
+  }
+
+  if (coverage.messages === 0) {
+    return {
+      level: "none",
+      label: "Nothing to check yet",
+      detail: `No messages have arrived for this account, so there is nothing to compare a balance against.${anchored}`,
+      share: null,
+      coverage,
+    };
+  }
+
+  const share = coverage.withBalance / coverage.messages;
+
+  if (coverage.withBalance === 0) {
+    return {
+      level: "none",
+      label: "Not checked against the bank",
+      detail: `None of the last ${coverage.messages} messages carried a balance, so the figure above is derived from message flow alone.${anchored}`,
+      share,
+      coverage,
+    };
+  }
+
+  const measured: ReconciliationLevel =
+    share >= FULL_AT ? "full" : share >= PARTIAL_AT ? "partial" : "weak";
+
+  // Not enough messages to call a share a rate. Capped, and the reason stated.
+  const level: ReconciliationLevel =
+    coverage.messages < MIN_SAMPLE && measured !== "weak" ? "weak" : measured;
+
+  const counted = `${coverage.withBalance} of the last ${coverage.messages} messages stated a balance`;
+
+  if (level === "full") {
+    return {
+      level,
+      label: "Checked against the bank",
+      detail: `${counted}, and the ledger agrees with every one of them.`,
+      share,
+      coverage,
+    };
+  }
+
+  if (level === "partial") {
+    return {
+      level,
+      label: "Partly checked",
+      detail: `${counted}. The rest are unverified — a missed message between two of them would not show up here.`,
+      share,
+      coverage,
+    };
+  }
+
+  return {
+    level,
+    label: "Rarely checked",
+    detail:
+      coverage.messages < MIN_SAMPLE
+        ? `Only ${coverage.messages} messages so far, ${coverage.withBalance} with a balance — too few to call this verified either way.${anchored}`
+        : `${counted}. Long stretches of this account have never been checked against anything.${anchored}`,
+    share,
+    coverage,
+  };
+}
+
 export type AccountView = AccountRow & {
   /** Signed contribution to net worth. Negative for anything owed. */
   net: number;

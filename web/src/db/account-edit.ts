@@ -12,7 +12,7 @@
  * reason. Nothing here imports from `next/*`.
  */
 
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import {
   type AccountDraft,
@@ -25,7 +25,6 @@ import {
   parseAmount,
   validate,
 } from "../lib/account-edit.ts";
-import type { getDb } from "./index.ts";
 import * as schema from "./schema.ts";
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- the transaction handle
@@ -38,12 +37,23 @@ import * as schema from "./schema.ts";
 /** Structurally what `drizzle()` returns, for either driver. */
 type Db = { transaction: <T>(fn: (tx: any) => Promise<T>) => Promise<T> };
 
-/** The app's own client, for the read that only ever runs there. */
-type AppDb = ReturnType<typeof getDb>;
-
 export type EditInput = {
   accountId: string;
-  draft: AccountDraft;
+  /**
+   * The settings as the form submitted them, or **null for a balance-only
+   * entry**.
+   *
+   * §3.3b makes one-tap manual balance entry a v1 requirement, not a nicety:
+   * SAIB never reports a balance in any message and holds the current account,
+   * the savings account and the salary. That control is one field, and it has
+   * no business submitting a whole account alongside it — a form that carries
+   * nine settings to change one figure is a form that can revert eight of them.
+   *
+   * Null means "the account keeps whatever it holds": the draft is read from
+   * the locked row inside the transaction, so nothing can be reverted to a
+   * value the page happened to be rendered with.
+   */
+  draft: AccountDraft | null;
   /** The balance as the person typed it, or null to leave it alone. */
   targetBalance: string | null;
   /**
@@ -73,11 +83,15 @@ export type EditOutcome = {
 export type EditResult = { ok: true; outcome: EditOutcome } | { ok: false; error: string };
 
 export async function applyAccountEdit(db: Db, input: EditInput): Promise<EditResult> {
-  const draft = normalise(input.draft);
   const submitted = input.targetBalance === null ? null : input.targetBalance.trim() || null;
 
-  const invalid = validate(draft, submitted);
-  if (invalid) return { ok: false, error: invalid };
+  // A submitted draft is refused before the transaction opens. A balance-only
+  // entry has no draft to check yet — its fields come from the locked row
+  // below, and are validated there against the same rules.
+  if (input.draft) {
+    const invalid = validate(normalise(input.draft), submitted);
+    if (invalid) return { ok: false, error: invalid };
+  }
 
   // Untouched, so not a request at all. Compared as amounts rather than as
   // text: the form renders "1912.40" and a person retyping the same figure may
@@ -113,6 +127,19 @@ export async function applyAccountEdit(db: Db, input: EditInput): Promise<EditRe
       .for("update")) as (AccountState & { id: string })[];
 
     if (!before) return { ok: false, error: "That account no longer exists." };
+
+    // A balance-only entry adopts the account's own settings, read under the
+    // lock a line above. `diff` will therefore find nothing but the balance,
+    // and the UPDATE below touches only the columns it names.
+    const draft = input.draft ? normalise(input.draft) : draftOf(before);
+
+    if (!input.draft) {
+      // The account may already be in a state that inverts net worth — a card
+      // reporting available credit with no limit (§3.3a). Booking a balance
+      // onto it would make that inversion look freshly confirmed by hand.
+      const invalid = validate(draft, submitted);
+      if (invalid) return { ok: false, error: invalid };
+    }
 
     const at = input.at ?? new Date();
 
@@ -244,31 +271,25 @@ export async function applyAccountEdit(db: Db, input: EditInput): Promise<EditRe
   });
 }
 
+/** The account's current settings, as a draft that changes none of them.
+ *  Listed field by field rather than spread, so a column added to the SELECT
+ *  above cannot silently become something a balance entry writes. */
+function draftOf(before: AccountState): AccountDraft {
+  return {
+    name: before.name,
+    type: before.type,
+    balanceSemantics: before.balanceSemantics,
+    reconcilable: before.reconcilable,
+    creditLimit: before.creditLimit,
+    statementDay: before.statementDay,
+    dueDay: before.dueDay,
+    isProfitBearing: before.isProfitBearing,
+    profitPayoutDay: before.profitPayoutDay,
+  };
+}
+
 /** NUMERIC(14,2) as the database will hold it. */
 function formatStored(amount: string): string {
   const halalas = parseAmount(amount);
   return halalas === null ? amount : (halalas / 100).toFixed(2);
-}
-
-/** The last few edits per account, for the sheet's history list. */
-export async function recentEdits(db: AppDb, perAccount = 5) {
-  return db.execute<{
-    id: string;
-    account_id: string;
-    changed: Record<string, Change>;
-    note: string | null;
-    adjustment_transaction_id: string | null;
-    created_at: string;
-  }>(sql`
-    SELECT id, account_id, changed, note, adjustment_transaction_id,
-           to_char(created_at AT TIME ZONE 'UTC',
-                   'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
-      FROM (
-        SELECT *, row_number() OVER (PARTITION BY account_id
-                                     ORDER BY created_at DESC, id) AS rank
-          FROM account_edits
-      ) ranked
-     WHERE rank <= ${perAccount}
-     ORDER BY created_at DESC
-  `);
 }

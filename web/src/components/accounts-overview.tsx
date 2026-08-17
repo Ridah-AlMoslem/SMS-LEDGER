@@ -1,11 +1,17 @@
-import { AccountEditor, type EditRecord } from "@/app/accounts/account-editor";
+import Link from "next/link";
+
+import { BalanceEntry } from "@/app/accounts/balance-entry";
+import { ReconciliationChip } from "@/components/accounts/reconciliation";
 import {
   type AccountView,
   type Alert,
+  type Coverage,
   type Group,
+  NO_COVERAGE,
   TYPE_LABELS,
   asOf,
   money,
+  reconciliationOf,
   totals,
 } from "@/lib/accounts";
 
@@ -34,7 +40,7 @@ function CreditCardRow({ a, drifted }: { a: AccountView; drifted: boolean }) {
   const pct = a.utilisation === null ? null : Math.round(a.utilisation * 100);
 
   return (
-    <div className="py-3">
+    <>
       <div className="flex items-baseline justify-between gap-4">
         <div className="min-w-0">
           <p className="sms-body truncate font-medium">{a.name}</p>
@@ -69,73 +75,117 @@ function CreditCardRow({ a, drifted }: { a: AccountView; drifted: boolean }) {
           </p>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
-/** Shared subtitle. §3.3b is emphatic that "unverifiable" must never look like
- *  "verified", so the absence of reconciliation is stated rather than implied
- *  by the absence of a badge. */
+/** Shared subtitle. The type, and anything about the account that changes what
+ *  the figure beside it means. Reconciliation state is NOT here — §3.3b wants
+ *  it stated on every account rather than badged on the exceptions, so it has
+ *  its own line below. */
 function AccountMeta({ a, drifted }: { a: AccountView; drifted: boolean }) {
   return (
     <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-xs opacity-60">
       <span>{TYPE_LABELS[a.type] ?? a.type}</span>
       {a.isProfitBearing && <Badge>profit-bearing</Badge>}
-      {!a.reconcilable && <Badge tone="warn">no balance in SMS</Badge>}
       {drifted && <Badge tone="danger">doesn&rsquo;t match bank</Badge>}
     </p>
   );
 }
 
-function AccountRowView({ a, drifted }: { a: AccountView; drifted: boolean }) {
-  if (a.type === "credit_card") return <CreditCardRow a={a} drifted={drifted} />;
-
-  const zero = a.net === 0;
-
-  return (
-    <div className="flex items-baseline justify-between gap-4 py-3">
-      <div className="min-w-0">
-        <p className="sms-body truncate font-medium">{a.name}</p>
-        <AccountMeta a={a} drifted={drifted} />
-      </div>
-
-      <p className={`tabular shrink-0 text-base ${zero ? "opacity-40" : "font-medium"}`}>
-        {money(a.net)}
-      </p>
-    </div>
-  );
-}
-
-/** The subset of a row the edit sheet is allowed to change. Picked explicitly
- *  rather than passed whole: `AccountView` carries derived figures (`net`,
- *  `debt`, `utilisation`) that are conclusions, not settings, and putting a
- *  conclusion in a form is how it becomes an input. */
-function editable(a: AccountView) {
+/** The fields the one-tap balance control needs. Picked explicitly: an
+ *  `AccountView` carries derived figures (`net`, `debt`, `utilisation`) that
+ *  are conclusions, and putting a conclusion into a form is how it becomes an
+ *  input. */
+function target(a: AccountView) {
   return {
     id: a.id,
     slug: a.slug,
     name: a.name,
     institution: a.institution,
-    type: a.type,
     balanceSemantics: a.balanceSemantics,
-    reconcilable: a.reconcilable,
-    currentBalance: a.currentBalance,
     creditLimit: a.creditLimit,
-    statementDay: a.statementDay,
-    dueDay: a.dueDay,
-    isProfitBearing: a.isProfitBearing,
-    profitPayoutDay: a.profitPayoutDay,
+    currentBalance: a.currentBalance,
+    reconcilable: a.reconcilable,
   };
+}
+
+function AccountRow({
+  a,
+  drifted,
+  coverage,
+}: {
+  a: AccountView;
+  drifted: boolean;
+  coverage: Coverage;
+}) {
+  const zero = a.net === 0;
+  const reconciliation = reconciliationOf(a, coverage);
+
+  return (
+    <div className="py-3">
+      <Link
+        href={`/accounts/${a.slug}`}
+        className="group -mx-2 block rounded-lg px-2 py-1 hover:bg-black/[0.03] dark:hover:bg-white/[0.05]"
+      >
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            {a.type === "credit_card" ? (
+              <CreditCardRow a={a} drifted={drifted} />
+            ) : (
+              <div className="flex items-baseline justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="sms-body truncate font-medium">{a.name}</p>
+                  <AccountMeta a={a} drifted={drifted} />
+                </div>
+                {/* The minus is not decoration. An overdrawn current account
+                    printed as a positive balance is the same class of error as
+                    §3.3a's inverted card — a liability shown as an asset — and
+                    `money()` deliberately prints the magnitude and leaves the
+                    sign to the caller. */}
+                <p
+                  className={`tabular shrink-0 text-base ${
+                    zero
+                      ? "opacity-40"
+                      : a.net < 0
+                        ? "font-medium text-rose-600 dark:text-rose-400"
+                        : "font-medium"
+                  }`}
+                >
+                  {a.net < 0 && "−"}
+                  {money(a.net)}
+                </p>
+              </div>
+            )}
+          </div>
+          <span
+            aria-hidden
+            className="shrink-0 self-center opacity-25 transition-opacity group-hover:opacity-60"
+          >
+            ›
+          </span>
+        </div>
+      </Link>
+
+      {/* §3.3b — stated per account, on every account, never implied by the
+          absence of a badge. Beside it, the control that is the answer when
+          the state is "not checked". */}
+      <div className="mt-1.5 flex items-center justify-between gap-3">
+        <ReconciliationChip r={reconciliation} />
+        <BalanceEntry account={target(a)} />
+      </div>
+    </div>
+  );
 }
 
 function GroupCard({
   group,
   drifted,
-  edits,
+  coverage,
 }: {
   group: Group;
   drifted: Set<string>;
-  edits: Record<string, EditRecord[]>;
+  coverage: Map<string, Coverage>;
 }) {
   const negative = group.net < 0;
 
@@ -155,9 +205,12 @@ function GroupCard({
 
       <div className="divide-y divide-black/5 px-4 dark:divide-white/5">
         {group.accounts.map((a) => (
-          <AccountEditor key={a.id} account={editable(a)} history={edits[a.id] ?? []}>
-            <AccountRowView a={a} drifted={drifted.has(a.id)} />
-          </AccountEditor>
+          <AccountRow
+            key={a.id}
+            a={a}
+            drifted={drifted.has(a.id)}
+            coverage={coverage.get(a.id) ?? NO_COVERAGE}
+          />
         ))}
       </div>
     </section>
@@ -167,22 +220,30 @@ function GroupCard({
 export function AccountsOverview({
   groups,
   alerts,
-  edits,
+  coverage,
 }: {
   groups: Group[];
   alerts: Alert[];
-  /** Account id → its recent hand edits, newest first. */
-  edits: Record<string, EditRecord[]>;
+  /** Account id → how much of it the bank has actually verified (§3.3b). */
+  coverage: Map<string, Coverage>;
 }) {
   const { assets, debt, netWorth } = totals(groups);
   const drifted = new Set(alerts.map((a) => a.accountId));
-  const byId = new Map(groups.flatMap((g) => g.accounts).map((a) => [a.id, a]));
+  const accounts = groups.flatMap((g) => g.accounts);
+  const byId = new Map(accounts.map((a) => [a.id, a]));
 
-  const stale = groups
-    .flatMap((g) => g.accounts)
+  const stale = accounts
     .map((a) => a.balanceAsOf)
     .filter((d): d is Date => d !== null)
     .sort((a, b) => a.getTime() - b.getTime())[0];
+
+  // §3.3b — how much of the picture is verified at all. Stated once at the top
+  // because a net worth figure assembled mostly from unchecked accounts is a
+  // different claim from one the banks have confirmed, and the reader cannot
+  // tell them apart from the number alone.
+  const unchecked = accounts.filter(
+    (a) => reconciliationOf(a, coverage.get(a.id) ?? NO_COVERAGE).level === "none",
+  );
 
   return (
     <div className="space-y-5">
@@ -190,20 +251,36 @@ export function AccountsOverview({
         <p className="text-xs tracking-wide uppercase opacity-60">Net worth</p>
         <p className="tabular mt-1 text-3xl font-semibold">{money(netWorth)}</p>
 
-        <div className="mt-3 flex gap-5 text-sm">
-          <span>
-            <span className="opacity-60">Assets </span>
-            <span className="tabular text-emerald-600 dark:text-emerald-400">{money(assets)}</span>
-          </span>
-          <span>
-            <span className="opacity-60">Owed </span>
-            <span className="tabular text-rose-600 dark:text-rose-400">{money(debt)}</span>
-          </span>
-        </div>
+        {/* Assets and liabilities as separate figures, not one net number: they
+            move for different reasons and a net worth that is flat because both
+            grew is a different month from one that is flat because neither did. */}
+        <dl className="mt-3 grid grid-cols-2 gap-3">
+          <div className="rounded-lg bg-black/[0.03] p-3 dark:bg-white/[0.06]">
+            <dt className="text-xs opacity-60">Assets</dt>
+            <dd className="tabular mt-0.5 text-lg font-semibold text-emerald-600 dark:text-emerald-400">
+              {money(assets)}
+            </dd>
+          </div>
+          <div className="rounded-lg bg-black/[0.03] p-3 dark:bg-white/[0.06]">
+            <dt className="text-xs opacity-60">Liabilities</dt>
+            <dd className="tabular mt-0.5 text-lg font-semibold text-rose-600 dark:text-rose-400">
+              {money(debt)}
+            </dd>
+          </div>
+        </dl>
 
         {stale && (
           <p className="mt-3 text-xs opacity-50">
             Opening balances set {asOf(stale)}. Figures move as messages are parsed.
+          </p>
+        )}
+
+        {unchecked.length > 0 && (
+          <p className="mt-2 text-xs opacity-60">
+            {unchecked.length === 1
+              ? `${unchecked[0].name} is not checked against its bank`
+              : `${unchecked.length} of these accounts are not checked against their banks`}{" "}
+            — their share of the figure above rests on messages arriving, and nothing else.
           </p>
         )}
       </section>
@@ -224,7 +301,13 @@ export function AccountsOverview({
               const off = Number(al.delta);
               return (
                 <li key={al.accountId} className="opacity-80">
-                  <span className="font-medium">{acct?.name ?? "Unknown account"}</span>{" "}
+                  {acct ? (
+                    <Link href={`/accounts/${acct.slug}`} className="font-medium underline underline-offset-2">
+                      {acct.name}
+                    </Link>
+                  ) : (
+                    <span className="font-medium">Unknown account</span>
+                  )}{" "}
                   — we calculate <span className="tabular">{money(Number(al.computedBalance))}</span>,
                   the bank reports <span className="tabular">{money(Number(al.reportedBalance))}</span>{" "}
                   ({off > 0 ? "over" : "under"} by{" "}
@@ -241,13 +324,13 @@ export function AccountsOverview({
       )}
 
       {groups.map((g) => (
-        <GroupCard key={g.institution} group={g} drifted={drifted} edits={edits} />
+        <GroupCard key={g.institution} group={g} drifted={drifted} coverage={coverage} />
       ))}
 
       <p className="text-xs opacity-50">
-        Tap an account to edit it. A corrected balance is booked to the ledger as an adjustment —
-        it is a dated entry you can find later, not an overwrite, and it counts as neither income
-        nor spending.
+        Tap an account for its history and settings. A balance you enter by hand is booked to the
+        ledger as an adjustment — a dated entry you can find later, not an overwrite, and it counts
+        as neither income nor spending.
       </p>
     </div>
   );

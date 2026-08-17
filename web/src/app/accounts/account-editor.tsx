@@ -168,6 +168,9 @@ export function AccountEditor({
 
         <form action={action} className="mt-4">
           <input type="hidden" name="id" value={account.id} />
+          {/* So the action can revalidate this account's own detail route as
+              well as the list — a booked adjustment moves both. */}
+          <input type="hidden" name="slug" value={account.slug} />
           {/* What the balance field below was rendered with. A balance moves
               on its own — the parser rewrites it whenever a message lands —
               so submitting this figure back unchanged has to mean "leave it",

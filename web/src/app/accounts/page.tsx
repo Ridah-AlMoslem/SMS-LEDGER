@@ -1,95 +1,45 @@
-import { asc, desc, eq, isNull } from "drizzle-orm";
 import Link from "next/link";
 
-import type { EditRecord } from "@/app/accounts/account-editor";
 import { AccountsOverview } from "@/components/accounts-overview";
 import { EmptyState } from "@/components/ui/empty-state";
-import { getDb, schema } from "@/db";
-import { recentEdits } from "@/db/account-edit";
-import { type AccountRow, type Alert, groupByInstitution } from "@/lib/accounts";
+import { type AccountsOverviewData, loadAccountsOverview } from "@/db/accounts";
+import { groupByInstitution } from "@/lib/accounts";
 import { reason } from "@/lib/errors";
+import { today } from "@/lib/periods";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Balances, per institution.
+ * Balances, per institution — SPEC §3.3, §11.4.
  *
- * No period header state is used here on purpose: a balance is a fact about
- * right now, not about a reporting window, and showing it under a "week"
- * selector would imply it could be scoped to one. Card *spending* is reported
- * in salary cycles like everything else (§5.5) and lives in the ledger.
+ * No period header here on purpose: a balance is a fact about right now, not
+ * about a reporting window, and showing it under a "week" selector would imply
+ * it could be scoped to one. Card and account *spending* is reported in salary
+ * cycles like everything else (§5.5), and lives one tap away on each account's
+ * own page.
+ *
+ * Three things this screen must do that a list of balances would not:
+ *
+ *   1. **Split net worth into assets and liabilities.** They move for different
+ *      reasons, and one net figure hides which.
+ *   2. **State reconciliation per account** (§3.3b) — on every account, not as
+ *      a badge on the exceptions. An account with nothing beside it reads as
+ *      verified, and most of these are not verified, they are unchecked.
+ *   3. **Offer manual balance entry on every account.** §3.3b makes it a v1
+ *      requirement: it is the only anchor an account whose bank never states a
+ *      balance will ever have.
  */
-async function load() {
-  const db = getDb();
-
-  const accounts = (await db
-    .select({
-      id: schema.accounts.id,
-      slug: schema.accounts.slug,
-      name: schema.accounts.name,
-      institution: schema.accounts.institution,
-      type: schema.accounts.type,
-      isLiability: schema.accounts.isLiability,
-      balanceSemantics: schema.accounts.balanceSemantics,
-      reconcilable: schema.accounts.reconcilable,
-      currentBalance: schema.accounts.currentBalance,
-      creditLimit: schema.accounts.creditLimit,
-      isProfitBearing: schema.accounts.isProfitBearing,
-      balanceAsOf: schema.accounts.balanceAsOf,
-      sortOrder: schema.accounts.sortOrder,
-      statementDay: schema.accounts.statementDay,
-      dueDay: schema.accounts.dueDay,
-      profitPayoutDay: schema.accounts.profitPayoutDay,
-    })
-    .from(schema.accounts)
-    .where(eq(schema.accounts.isActive, true))
-    .orderBy(asc(schema.accounts.sortOrder))) as AccountRow[];
-
-  const alerts = (await db
-    .select({
-      accountId: schema.reconciliationAlerts.accountId,
-      computedBalance: schema.reconciliationAlerts.computedBalance,
-      reportedBalance: schema.reconciliationAlerts.reportedBalance,
-      delta: schema.reconciliationAlerts.delta,
-      detectedAt: schema.reconciliationAlerts.detectedAt,
-    })
-    .from(schema.reconciliationAlerts)
-    .where(isNull(schema.reconciliationAlerts.resolvedAt))
-    .orderBy(desc(schema.reconciliationAlerts.detectedAt))) as Alert[];
-
-  // Grouped here rather than queried per row: the sheet for every account is
-  // rendered with the list, and one query for all of them beats one per
-  // account on a screen that already runs two.
-  const edits: Record<string, EditRecord[]> = {};
-  for (const row of await recentEdits(db)) {
-    const record: EditRecord = {
-      id: row.id,
-      accountId: row.account_id,
-      changed: row.changed,
-      note: row.note,
-      adjustmentTransactionId: row.adjustment_transaction_id,
-      createdAt: row.created_at,
-    };
-    (edits[row.account_id] ??= []).push(record);
-  }
-
-  return { accounts, alerts, edits };
-}
-
 export default async function AccountsPage() {
-  let data: Awaited<ReturnType<typeof load>>;
+  let data: AccountsOverviewData;
 
   try {
-    data = await load();
+    data = await loadAccountsOverview(today());
   } catch (err) {
     return (
       <main>
         <h1 className="text-xl font-semibold">Accounts</h1>
         <div className="mt-6">
-          <EmptyState
-            title="Can't reach the database"
-            body={reason(err)}
-          />
+          <EmptyState title="Can't reach the database" body={reason(err)} />
         </div>
       </main>
     );
@@ -105,7 +55,7 @@ export default async function AccountsPage() {
         {groups.length === 0 ? (
           <EmptyState title="No accounts yet" body="Run npm run db:seed to create them." />
         ) : (
-          <AccountsOverview groups={groups} alerts={data.alerts} edits={data.edits} />
+          <AccountsOverview groups={groups} alerts={data.alerts} coverage={data.coverage} />
         )}
       </div>
 

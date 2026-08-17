@@ -4,10 +4,20 @@ import { revalidatePath } from "next/cache";
 
 import { getDb } from "@/db";
 import { type EditOutcome, applyAccountEdit } from "@/db/account-edit";
+import { type ResolveResult, resolveDrift } from "@/db/reconciliation";
 
 export type SaveResult =
   | { ok: true; outcome: EditOutcome }
   | { ok: false; error: string };
+
+/** Every screen a booked adjustment moves. The leg is a transaction: it has a
+ *  date, sits in the ledger, and shifts the net-worth figure on Home. */
+function revalidateAll(slug?: string | null) {
+  revalidatePath("/accounts");
+  if (slug) revalidatePath(`/accounts/${slug}`);
+  revalidatePath("/ledger");
+  revalidatePath("/");
+}
 
 /**
  * Save an edited account (SPEC §3.3, §9.4).
@@ -63,11 +73,87 @@ export async function saveAccount(_prev: SaveResult | null, form: FormData): Pro
 
   if (!result.ok) return result;
 
-  revalidatePath("/accounts");
-  // The adjustment is a transaction: it belongs to a period, shows on the
-  // ledger, and moves the net-worth figure on Home.
-  revalidatePath("/ledger");
-  revalidatePath("/");
+  revalidateAll(opt("slug"));
+
+  return result;
+}
+
+/**
+ * §3.3b's third compensating control: one-tap manual balance entry.
+ *
+ * A v1 requirement rather than a nicety — SAIB never states a balance in any
+ * message and holds the current account, the savings account and the salary, so
+ * without this those three are derived from message flow alone forever, with
+ * nothing to check them against.
+ *
+ * It submits one figure and no settings. `applyAccountEdit` reads the rest of
+ * the account from the row it locks, which is what stops a control this small
+ * from being able to revert anything: there is nothing else in the form to
+ * revert it to.
+ */
+export async function enterBalance(
+  _prev: SaveResult | null,
+  form: FormData,
+): Promise<SaveResult> {
+  const str = (k: string) => (form.get(k) as string | null)?.trim() ?? "";
+
+  const accountId = str("id");
+  if (!accountId) return { ok: false, error: "No account was submitted." };
+
+  const balance = str("balance");
+  if (!balance) return { ok: false, error: "Enter the balance your bank is showing." };
+
+  let result;
+  try {
+    result = await applyAccountEdit(getDb(), {
+      accountId,
+      // Nothing but the balance. See `EditInput.draft`.
+      draft: null,
+      targetBalance: balance,
+      // Deliberately absent: this control exists to assert a figure read off
+      // the bank's own app, so it is always a claim about now, never a
+      // resubmission of what the page was rendered with.
+      knownBalance: null,
+      note: str("note") || null,
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  if (!result.ok) return result;
+
+  revalidateAll(str("slug"));
+
+  return result;
+}
+
+/**
+ * Close a drift alert with the reason it was closed (§3.3).
+ *
+ * Does not touch the balances. If the ledger and the bank still disagree, the
+ * next reconciliation pass raises the same alert again — which is correct, and
+ * which the sheet says out loud, because a button that looks like it fixes a
+ * number it does not touch is worse than no button.
+ */
+export async function resolveAlert(
+  _prev: ResolveResult | null,
+  form: FormData,
+): Promise<ResolveResult> {
+  const str = (k: string) => (form.get(k) as string | null)?.trim() ?? "";
+
+  const alertId = str("alert_id");
+  if (!alertId) return { ok: false, error: "No alert was submitted." };
+
+  let result;
+  try {
+    result = await resolveDrift(getDb(), { alertId, note: str("note") });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  if (!result.ok) return result;
+
+  revalidateAll(str("slug"));
 
   return result;
 }

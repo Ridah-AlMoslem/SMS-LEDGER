@@ -92,10 +92,33 @@ stepper scopes it by default; an explicit range in the filters replaces it and
 `page.tsx` hides the stepper. A stepper that no longer scopes what is beneath it
 invites the reader to believe a total moved because they stepped back a month.
 
+## The rollover carry is read, never recomputed
+
+`budgets.carry_in` is written once, by `closeCycle` in `db/budgets.ts`, when a
+cycle ends — and `carry_closed_at` is what stops anything asking again. Nothing
+anywhere may derive it by folding over history, however tempting the fold looks:
+that is precisely the cascade §11.2 forbids, where correcting one mis-parsed
+purchase from March moves April's carry, which moves May's, which moves the
+allowance on the screen in front of you today.
+
+Home used to fold six cycles of history at read time. It now reads the column,
+because two screens deriving the same figure two ways is the failure the rest of
+this file is about — and Plan cannot fold, since a settled carry is the only
+thing that makes "last cycle is over" true.
+
+`carryForward()` in `lib/pace.ts` is the whole of the arithmetic and takes one
+closing cycle. There is deliberately no function that takes a history.
+`resetCarry` (§11.2's escape hatch) is the only other thing that moves the
+figure, and it stamps `carry_closed_at` too — otherwise the next nightly close
+would helpfully put the drift back and the button would look broken.
+
+`npm run test:budgets` asserts the no-cascade property *and* measures the
+counterfactual, so the test proves the cascade was real rather than absent.
+
 ## Optimistic edits roll back visibly
 
 TanStack Query is mounted per screen (`components/query-provider.tsx`), not in
-the layout — Ledger is the only page that edits. Every mutation in
+the layout — Ledger is the only page with a client cache. Every mutation in
 `app/ledger/use-ledger.ts` snapshots the cache, patches it, and on failure puts
 the old value back *and* raises a message. Both halves: a row that snaps back
 with no explanation reads as a rendering bug, and a message with no snap-back
@@ -105,6 +128,13 @@ Server actions return `{ok: false, error}` rather than throwing, so every
 `mutationFn` re-throws it. Miss that and React Query treats a refused edit as a
 success and leaves the optimistic value in place — the silent-drop failure the
 whole arrangement exists to prevent.
+
+**Plan edits without a query client, and owes the same two halves.** Its panels
+use `useOptimistic` inside a `useTransition`: React drops the patch when the
+transition ends, so a refused edit snaps back on its own, and the message beside
+it is not optional for the same reason as above. Don't mount a second
+`QueryProvider` to get this — there is no list to page through here, and the
+server action's `revalidatePath` is what brings the real figures back.
 
 ## Waiting states: use `<Loader>`, never a new spinner
 

@@ -1,6 +1,7 @@
 import { desc, inArray, sql } from "drizzle-orm";
 
 import { getDb, schema } from "@/db";
+import { reason } from "@/lib/errors";
 import { timeOfDay } from "@/lib/format";
 import {
   type Health,
@@ -210,7 +211,7 @@ export default async function ReviewPage() {
       <main>
         <h1 className="text-xl font-semibold">Review</h1>
         <p className="mt-4 text-sm opacity-70">
-          {err instanceof Error ? err.message : String(err)}
+          {reason(err)}
         </p>
       </main>
     );

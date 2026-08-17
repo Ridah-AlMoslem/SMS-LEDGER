@@ -210,6 +210,27 @@ npm run db:seed        # edit scripts/seed.local.sql balances first
 Both are safe to re-run. Opening balances are not optional — without them the
 SAIB accounts have no anchor at all, since no SAIB message reports a balance.
 
+**On every deploy after the first, migrate BEFORE you deploy the code.** The
+migrations here are additive — new columns, new indexes — so the running version
+ignores what it does not know about, and a database that is one migration ahead
+of its code is harmless. The reverse is not: code that reads a column its
+database has not got takes out every page that selects it, with a "Can't reach
+the database" panel and no other clue. Migration 0009 did exactly that to Home,
+which had nothing to do with the feature that added the column and simply reads
+`budgets.carry_in` for its pace rows.
+
+So the order is: `npm run db:migrate`, confirm, then `vercel deploy --prod`. If
+you get it the wrong way round, the fix is to run the migration — the deploy does
+not need repeating.
+
+**Check** — that a column the new code needs is actually there:
+
+```sql
+select column_name from information_schema.columns
+ where table_name = 'budgets' and column_name in ('carry_in', 'carry_closed_at');
+-- two rows. None means 0009 has not run, and Home and Plan will both be down.
+```
+
 ---
 
 ## 3. Schedule the tick
@@ -330,6 +351,74 @@ select status_code, content, error_msg, created
 
 A `200` with a counts object is the tick working. A `401` means `CRON_SECRET`
 in Vault and on Vercel disagree.
+
+**3e. The nightly Plan pass**
+
+A second job, for the two things Plan needs that nothing else does: closing a
+salary cycle so its rollover carry is written (SPEC §11.2), and re-detecting
+recurring series (§11.3).
+
+Nightly, not per-minute, and the difference is not thrift. A cycle boundary
+happens once a month, and a subscription that has been billing for a year does
+not reveal itself between 03:00 and 03:01 — but the parse tick has to stay at a
+minute because a message arriving is exactly the thing that does.
+
+```sql
+create or replace function public.sms_ledger_plan_tick()
+returns bigint
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  base   text;
+  secret text;
+begin
+  select decrypted_secret into base
+    from vault.decrypted_secrets where name = 'sms_ledger_base_url';
+  select decrypted_secret into secret
+    from vault.decrypted_secrets where name = 'sms_ledger_cron_secret';
+
+  return net.http_post(
+    url     := base || '/api/plan-tick',
+    body    := '{}'::jsonb,
+    headers := jsonb_build_object(
+                 'Content-Type', 'application/json',
+                 'X-Cron-Secret', secret),
+    timeout_milliseconds := 25000
+  );
+end;
+$$;
+
+revoke all on function public.sms_ledger_plan_tick() from public, anon, authenticated;
+
+-- 21:10 UTC is 00:10 in Riyadh: ten minutes into the new day, so on the 25th the
+-- cycle that just ended is closed within the hour. pg_cron schedules in UTC.
+select cron.schedule(
+  'sms-ledger-plan-tick', '10 21 * * *', $$select public.sms_ledger_plan_tick()$$);
+```
+
+Missing a night costs nothing: the endpoint asks the database which cycles still
+owe a carry rather than assuming it ran yesterday, which is what makes it safe
+on a project Supabase has paused. It is not a keep-alive — that is the parse
+tick's job, and it stays scheduled.
+
+**Check.** This one is worth curling by hand before trusting the schedule,
+because `/api/*` is also the parser service's prefix — `vercel.json` rewrites
+`/api/(.*)` to it, after the filesystem check that finds this route, the same
+way `/api/ledger` already works:
+
+```bash
+curl -s -X POST https://<project>.vercel.app/api/plan-tick \
+  -H "X-Cron-Secret: $CRON_SECRET"
+# {"now":"2026-08-17","closed":[],"detection":{"scanned":39,"detected":5,...}}
+```
+
+A counts object is it working. A FastAPI `{"detail":"Not Found"}` means the
+rewrite won and the parser service answered instead — add an explicit
+`/api/plan-tick` rewrite to the `web` service ahead of the catch-all. A `401`
+means `CRON_SECRET` on Vercel and in Vault disagree, exactly as for the parse
+tick.
 
 ---
 

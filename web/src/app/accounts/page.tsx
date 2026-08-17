@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { getDb, schema } from "@/db";
 import { recentEdits } from "@/db/account-edit";
 import { type AccountRow, type Alert, groupByInstitution } from "@/lib/accounts";
+import { reason } from "@/lib/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -87,7 +88,7 @@ export default async function AccountsPage() {
         <div className="mt-6">
           <EmptyState
             title="Can't reach the database"
-            body={err instanceof Error ? err.message : String(err)}
+            body={reason(err)}
           />
         </div>
       </main>

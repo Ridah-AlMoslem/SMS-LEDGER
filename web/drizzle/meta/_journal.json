@@ -64,6 +64,13 @@
       "when": 1786780000000,
       "tag": "0008_ledger_crud",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786866400000,
+      "tag": "0009_plan_carry_goals_series",
+      "breakpoints": true
     }
   ]
 }

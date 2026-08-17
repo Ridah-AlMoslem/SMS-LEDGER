@@ -55,7 +55,6 @@ import {
 } from "@/db/aggregates";
 import type { AlertRow, Severity } from "@/lib/alerts";
 import type { Snapshot } from "@/lib/net-worth";
-import { type CycleBudget, foldCarry } from "@/lib/pace";
 import {
   type CivilDate,
   type Grain,
@@ -129,10 +128,10 @@ export type CategoryCycleSpend = {
 /**
  * Expense per (cycle, category) over a span of cycles.
  *
- * One fragment serves both the current cycle's pace rows and the rollover fold
- * behind them: `carry(c) = effective_budget(c−1) − spent(c−1)` needs the same
- * per-category spend, one cycle back, and computing that separately would
- * invite the two to disagree.
+ * The pace rows read one cycle of this. It is not what the rollover carry is
+ * derived from — that figure is stored on `budgets.carry_in` when a cycle closes
+ * (§11.2, `db/budgets.ts`), precisely so a corrected old transaction cannot
+ * cascade forward through every budget since.
  *
  * `category_id IS NULL` is kept rather than filtered out — uncategorized is a
  * first-class category (§11.2), it just has no budget to pace against.
@@ -152,11 +151,13 @@ export type BudgetRow = {
   categoryId: string;
   amount: number;
   rollover: boolean;
+  /** §11.2 — the stored carry into this cycle, signed. Read, never derived. */
+  carryIn: number;
 };
 
 export function budgetsQuery(from: CivilDate, to: CivilDate) {
   return sql`
-    SELECT cycle_start::text AS cycle_start, category_id, amount, rollover
+    SELECT cycle_start::text AS cycle_start, category_id, amount, rollover, carry_in
       FROM budgets
      WHERE cycle_start BETWEEN ${from}::date AND ${to}::date
      ORDER BY cycle_start
@@ -500,9 +501,8 @@ export type HomeData = {
   digest: Digest | null;
 };
 
-/** How far back the rollover fold and the trend charts look. §11.2 caps carry
- *  history at six cycles; the same window is what a phone-width chart can
- *  legibly carry. */
+/** How far back the trend charts look — the same six cycles §11.2 caps carry
+ *  history at, and about what a phone-width chart can legibly carry. */
 const CYCLES_BACK = 6;
 const WEEKS_BACK = 8;
 
@@ -527,6 +527,7 @@ type Payload = {
     category_id: string;
     amount: number | string;
     rollover: boolean;
+    carry_in: number | string;
   }[];
   daily: { day: string; total: number | string; n: number | string }[];
   flows: {
@@ -571,8 +572,6 @@ export async function loadHome(
       ? addMonths(period, -(CYCLES_BACK - 1))
       : addDays(period, -7 * (WEEKS_BACK - 1));
 
-  const carryFrom = addMonths(cycle, -(CYCLES_BACK - 1));
-
   // §11.1 chart 1 — the heatmap is a calendar, so it is padded out to whole
   // weeks. Half a week of blank cells at the edge is what makes the 24/25 rule
   // legible as a boundary crossing a grid rather than as a ragged edge.
@@ -602,8 +601,8 @@ export async function loadHome(
       ${jsonRows(categoriesQuery())}                                      AS categories,
       ${jsonRows(accountsQuery())}                                        AS accounts,
       ${jsonRows(snapshotsQuery(netWorthWindow.from, netWorthWindow.to))} AS snapshots,
-      ${jsonRows(spendByCycleAndCategoryQuery(carryFrom, cycle))}         AS spend,
-      ${jsonRows(budgetsQuery(carryFrom, cycle))}                         AS budgets,
+      ${jsonRows(spendByCycleAndCategoryQuery(cycle, cycle))}             AS spend,
+      ${jsonRows(budgetsQuery(cycle, cycle))}                             AS budgets,
       ${jsonRows(dailySpendQuery(heatWindow.from, heatWindow.to))}        AS daily,
       ${jsonRows(flowByBucketQuery(grain, trendFrom, period))}            AS flows,
       ${jsonRows(categoryByBucketQuery(grain, trendFrom, period))}        AS trends,
@@ -687,6 +686,7 @@ export async function loadHome(
     categoryId: r.category_id,
     amount: num(r.amount),
     rollover: r.rollover,
+    carryIn: num(r.carry_in),
   }));
 
   const daily: DaySpend[] = (p?.daily ?? []).map((r) => ({
@@ -726,10 +726,7 @@ export async function loadHome(
         })
       : [];
 
-  /* ---- category pace, with the rollover fold behind it (§11.2) ---- */
-
-  const cycles: CivilDate[] = [];
-  for (let i = CYCLES_BACK - 1; i >= 0; i--) cycles.push(addMonths(cycle, -i));
+  /* ---- category pace, against the stored carry (§11.2) ---- */
 
   const spentAt = new Map<string, number>();
   for (const r of spend) spentAt.set(`${r.cycleStart}|${r.categoryId ?? ""}`, r.total);
@@ -742,18 +739,14 @@ export async function loadHome(
   for (const r of spend) if (r.cycleStart === cycle && r.categoryId) ids.add(r.categoryId);
 
   const categories: CategoryPace[] = [...ids].map((id) => {
-    const history: CycleBudget[] = cycles.map((c) => {
-      const b = budgetAt.get(`${c}|${id}`);
-      return {
-        cycleStart: c,
-        base: b?.amount ?? 0,
-        rollover: b?.rollover ?? false,
-        spent: spentAt.get(`${c}|${id}`) ?? 0,
-      };
-    });
+    const budget = budgetAt.get(`${cycle}|${id}`);
 
-    const carry = foldCarry(history);
-    const base = budgetAt.get(`${cycle}|${id}`)?.amount ?? null;
+    // Read, not folded. The carry was settled when the previous cycle closed
+    // (§11.2, `db/budgets.ts`); recomputing it here from six cycles of history
+    // is what would let a corrected March transaction move the allowance on
+    // this screen — and would let Home and Plan disagree about the same figure.
+    const carry = budget?.carryIn ?? 0;
+    const base = budget?.amount ?? null;
     const effective = base === null ? null : base + carry;
     const spent = spentAt.get(`${cycle}|${id}`) ?? 0;
 

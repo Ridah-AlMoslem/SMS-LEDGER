@@ -37,6 +37,7 @@ import { PullToRefresh } from "@/components/pull-to-refresh";
 import { Chip } from "@/components/ui/chip";
 import { EmptyState } from "@/components/ui/empty-state";
 import { type HomeData, loadHome } from "@/db/home";
+import { reason } from "@/lib/errors";
 import { groupByInstitution, totals as accountTotals } from "@/lib/accounts";
 import { rankAlerts, reviewQueueAlert } from "@/lib/alerts";
 import { OTHER_COLOR, WEEKDAY_INITIALS, foldToOther, seriesColorAt } from "@/lib/chart-theme";
@@ -114,7 +115,7 @@ export default async function Page(props: PageProps<"/">) {
         <div className="mt-6">
           <EmptyState
             title="Can't reach the database"
-            body={err instanceof Error ? err.message : String(err)}
+            body={reason(err)}
           />
         </div>
       </main>

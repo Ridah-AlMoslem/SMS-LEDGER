@@ -314,26 +314,78 @@ export const counterparties = pgTable("counterparties", {
  * amount-drift warnings suppressed for `kind = 'profit'`. Storing one blended
  * figure would make that distinction impossible to draw later.
  */
-export const recurringSeries = pgTable("recurring_series", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  merchantId: uuid("merchant_id").references(() => merchants.id),
-  accountId: uuid("account_id").references(() => accounts.id, { onDelete: "cascade" }),
-  kind: recurringKind("kind").notNull(),
+export const recurringSeries = pgTable(
+  "recurring_series",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    merchantId: uuid("merchant_id").references(() => merchants.id),
+    accountId: uuid("account_id").references(() => accounts.id, { onDelete: "cascade" }),
+    kind: recurringKind("kind").notNull(),
 
-  amountAvg: numeric("amount_avg", { precision: 14, scale: 2 }),
-  amountLast: numeric("amount_last", { precision: 14, scale: 2 }),
-  dayOfMonth: integer("day_of_month"),
-  /** Weekly and biweekly matter: they only become visible at the week grain. */
-  cadence: cadence("cadence").notNull(),
+    /**
+     * What to call it on screen.
+     *
+     * Stored because there is no one place to derive it from: a subscription has
+     * a merchant row, a SADAD bill has only a biller string (§7.5), a salary has
+     * neither, and a profit payout is named after the account it lands in. The
+     * detector resolves that chain once. Deriving it at read time from
+     * `detect_key` puts the normalised key on screen instead — `stc` where STC
+     * belongs.
+     */
+    label: text("label"),
 
-  nextExpectedAt: date("next_expected_at"),
-  firstSeen: timestamp("first_seen", { withTimezone: true }),
-  lastSeen: timestamp("last_seen", { withTimezone: true }),
-  occurrenceCount: integer("occurrence_count").notNull().default(0),
+    amountAvg: numeric("amount_avg", { precision: 14, scale: 2 }),
+    amountLast: numeric("amount_last", { precision: 14, scale: 2 }),
+    /** The amount before the last change, and the day the new one first
+     *  appeared. §11.3's price-increase flag is not evidence of anything
+     *  without them. Always null on a profit series — its amount varies every
+     *  cycle by nature and a drift warning there fires monthly and means
+     *  nothing. */
+    amountPrev: numeric("amount_prev", { precision: 14, scale: 2 }),
+    priceChangeAt: date("price_change_at"),
+    dayOfMonth: integer("day_of_month"),
+    /** Weekly and biweekly matter: they only become visible at the week grain. */
+    cadence: cadence("cadence").notNull(),
+    /** The median gap the detector measured, in days. `cadence` is the bucket
+     *  that was rounded into; this is the measurement, and what the next
+     *  expected date is derived from for weekly and biweekly series. */
+    intervalDays: integer("interval_days"),
 
-  status: seriesStatus("status").notNull().default("active"),
-  confidence: numeric("confidence", { precision: 4, scale: 3 }),
-});
+    nextExpectedAt: date("next_expected_at"),
+    firstSeen: timestamp("first_seen", { withTimezone: true }),
+    lastSeen: timestamp("last_seen", { withTimezone: true }),
+    occurrenceCount: integer("occurrence_count").notNull().default(0),
+
+    status: seriesStatus("status").notNull().default("active"),
+    confidence: numeric("confidence", { precision: 4, scale: 3 }),
+
+    /**
+     * `merchant identity | account | kind`, built by the detector.
+     *
+     * Text rather than a composite key over the three columns, because two of
+     * them are nullable — a SADAD bill has no merchant row, a salary has no
+     * merchant at all — and UNIQUE counts NULLs as distinct. The composite
+     * version would let the nightly pass insert a second copy of the same
+     * series every single night.
+     */
+    detectKey: text("detect_key"),
+
+    /** A person said this is real. Keeps it in the bills calendar through a
+     *  missed charge that would otherwise drop its confidence. */
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+    /** A person said it is noise. The row survives as a tombstone so the
+     *  detector recognises the pattern and stays quiet, rather than
+     *  rediscovering it under a new id tomorrow. */
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+    /** Stronger: the detector may not draw conclusions here at all, so even the
+     *  cadence and amounts stop being updated. */
+    excludedFromDetection: boolean("excluded_from_detection").notNull().default(false),
+  },
+  (t) => [
+    unique("recurring_series_detect_key").on(t.detectKey),
+    index("recurring_series_next_expected_idx").on(t.nextExpectedAt),
+  ],
+);
 
 /* ----------------------------------------------------------- transactions */
 
@@ -571,6 +623,25 @@ export const budgets = pgTable(
     /** Underspend raises next cycle's allowance; overspend lowers it (§11.2). */
     rollover: boolean("rollover").notNull().default(false),
     cycleStart: date("cycle_start").notNull(),
+
+    /**
+     * §11.2 — the rollover carry into this cycle, signed, and **stored**.
+     *
+     * `effective_budget(c) = base_budget(c) + carry(c)`, where
+     * `carry(c) = effective_budget(c−1) − spent(c−1)`. Written once, when the
+     * previous cycle closes — never recomputed by folding over history, because
+     * that fold is what makes a single corrected old transaction cascade
+     * through every budget since.
+     *
+     * Kept separate from `amount` all the way to the screen: a 2,000 base
+     * against a −1,800 carry has 200 to spend, and printing only the 200 makes
+     * an emergency look like a policy.
+     */
+    carryIn: numeric("carry_in", { precision: 14, scale: 2 }).notNull().default("0"),
+    /** Non-null means the carry is settled: the close job leaves it alone from
+     *  then on, whether it runs again, a correction lands, or a replay reruns.
+     *  Also set by "reset carry", which is the only way to move it by hand. */
+    carryClosedAt: timestamp("carry_closed_at", { withTimezone: true }),
   },
   (t) => [
     unique("budgets_category_cycle").on(t.categoryId, t.cycleStart),
@@ -582,15 +653,36 @@ export const budgets = pgTable(
 /** §11.2 — a virtual bucket over a real account. Progress reads the linked
  *  account's actual balance, never a separate counter, so a withdrawal reduces
  *  progress automatically and the number cannot drift from reality. */
-export const goals = pgTable("goals", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  name: text("name").notNull(),
-  targetAmount: numeric("target_amount", { precision: 14, scale: 2 }).notNull(),
-  targetDate: date("target_date"),
-  linkedAccountId: uuid("linked_account_id").references(() => accounts.id, {
-    onDelete: "set null",
-  }),
-});
+export const goals = pgTable(
+  "goals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    name: text("name").notNull(),
+    targetAmount: numeric("target_amount", { precision: 14, scale: 2 }).notNull(),
+    targetDate: date("target_date"),
+    linkedAccountId: uuid("linked_account_id").references(() => accounts.id, {
+      onDelete: "set null",
+    }),
+
+    /**
+     * The size of the bucket — how much of the linked account this goal claims.
+     *
+     * **Not the progress.** Progress is read from the account's real balance
+     * (§11.2), which is what makes a withdrawal reduce it automatically and
+     * what stops the figure drifting. This is the claim, and it exists as a
+     * stored number precisely because several goals may share one account and
+     * §11.2 requires that the sum of their claims be checked against the
+     * balance, with the unallocated remainder always displayed.
+     */
+    allocation: numeric("allocation", { precision: 14, scale: 2 }).notNull().default("0"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check("goals_allocation_not_negative", sql`${t.allocation} >= 0`),
+    check("goals_target_is_positive", sql`${t.targetAmount} > 0`),
+    index("goals_account_idx").on(t.linkedAccountId),
+  ],
+);
 
 /** §4 — amortization is computed from `apr` and `current_balance`, never
  *  stored. Only the interest portion of a payment is an expense; the principal

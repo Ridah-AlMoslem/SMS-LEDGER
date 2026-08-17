@@ -2,6 +2,7 @@ import { PeriodHeader } from "@/components/period-header";
 import { QueryProvider } from "@/components/query-provider";
 import { EmptyState } from "@/components/ui/empty-state";
 import { type Facets, type LedgerPage as Page, ledgerFacets, ledgerPage } from "@/db/ledger";
+import { reason } from "@/lib/errors";
 import { dateScope, readFilters } from "@/lib/ledger-filters";
 import { readSelection } from "@/lib/period-params";
 
@@ -49,7 +50,7 @@ export default async function LedgerPage(props: PageProps<"/ledger">) {
         <div className="mt-6">
           <EmptyState
             title="Can't reach the database"
-            body={err instanceof Error ? err.message : String(err)}
+            body={reason(err)}
           />
         </div>
       </main>

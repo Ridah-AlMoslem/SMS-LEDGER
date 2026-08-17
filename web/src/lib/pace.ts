@@ -139,32 +139,37 @@ export type CycleBudget = {
   /** The 25th that opens the cycle. */
   cycleStart: string;
   base: number;
+  /** The carry this cycle inherited — stored, not recomputed. */
+  carryIn: number;
   rollover: boolean;
   spent: number;
 };
 
 /**
- * §11.2 — `carry(c) = effective_budget(c−1) − spent(c−1)`, signed.
+ * §11.2 — `carry(c+1) = effective_budget(c) − spent(c)`, signed.
  *
  * Underspend raises the next cycle's allowance; **overspend lowers it**. That
  * is the honest version: overspending has a consequence, and saving across
  * cycles for a large purchase needs no separate feature.
  *
- * `history` is one category's cycles in ascending order, oldest first. The fold
- * starts from zero at the oldest one rather than from the beginning of time,
- * which is §11.2's "cap displayed carry history at the last 6 cycles" applied
- * to the computation as well as the display — and is why a single corrected old
- * transaction cannot cascade through years of budgets.
+ * **One step, from one closing cycle.** Not a fold over history, which is the
+ * distinction §11.2 spends a sentence on: "Carry is stored per cycle when the
+ * cycle closes, not recomputed from the beginning of time, so a single
+ * corrected old transaction can't cascade through years of budgets." A fold
+ * recomputed at read time is exactly that cascade — fixing a mis-parsed
+ * purchase from March would move April's carry, which moves May's, which moves
+ * the allowance on the screen in front of you today.
  *
- * Carry only accrues on cycles marked `rollover`; a non-rollover cycle both
- * ignores the carry it inherited and passes none on.
+ * So this is called once per cycle boundary by `closeCycle` in `db/budgets.ts`,
+ * its result is written to `budgets.carry_in`, and `carry_closed_at` is what
+ * stops it ever being asked again.
+ *
+ * A category without rollover carries nothing forward and inherits nothing: the
+ * carry it was handed is dropped rather than passed on.
  */
-export function foldCarry(history: CycleBudget[]): number {
-  let carry = 0;
-  for (const c of history.slice(0, -1)) {
-    carry = c.rollover ? c.base + carry - c.spent : 0;
-  }
-  return history.length > 0 && history[history.length - 1].rollover ? carry : 0;
+export function carryForward(closing: CycleBudget): number {
+  if (!closing.rollover) return 0;
+  return closing.base + closing.carryIn - closing.spent;
 }
 
 /**

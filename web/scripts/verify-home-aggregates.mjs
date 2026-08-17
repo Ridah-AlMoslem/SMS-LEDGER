@@ -38,7 +38,7 @@ const load = (rel) => import(pathToFileURL(path.join(SRC, rel)).href);
 
 const { IS_EARNED_SQL, IS_EXPENSE_SQL, IS_PASSIVE_SQL, IS_UNCATEGORIZED_SQL } =
   await load("db/predicates.ts");
-const { pace, foldCarry, effectiveBudget } = await load("lib/pace.ts");
+const { pace, carryForward, effectiveBudget } = await load("lib/pace.ts");
 const { groupByInstitution, totals: accountTotals, toView } = await load("lib/accounts.ts");
 const { netWorthSeries, hasShape } = await load("lib/net-worth.ts");
 const { rankAlerts, reviewQueueAlert } = await load("lib/alerts.ts");
@@ -511,22 +511,28 @@ console.log("\n[5] CYCLE OVERRIDE MOVES THE CYCLE, NEVER THE WEEK (§5.6)");
 
 console.log("\n[6] ROLLOVER CARRIES BOTH DIRECTIONS (§11.2)");
 {
-  const history = (spends, rollover = true) =>
-    spends.map((spent, i) => ({
-      cycleStart: `2026-0${i + 3}-25`,
-      base: 1000,
-      rollover,
-      spent,
-    }));
+  // One closing cycle at a time — which is the point. Home reads
+  // `budgets.carry_in`, written once when a cycle closed, and never recomputes
+  // it from history; `verify-budgets.mjs` is where the whole close is exercised
+  // against the database and where the no-cascade guarantee is asserted.
+  const closing = (spent, carryIn = 0, rollover = true) => ({
+    cycleStart: "2026-03-25",
+    base: 1000,
+    carryIn,
+    rollover,
+    spent,
+  });
 
   check("underspend raises the next cycle's allowance", () =>
-    assert.equal(foldCarry(history([800, 0])), 200));
+    assert.equal(carryForward(closing(800)), 200));
   check("overspend lowers it — that is the honest version", () =>
-    assert.equal(foldCarry(history([1400, 0])), -400));
-  check("carry accumulates across cycles rather than resetting", () =>
-    assert.equal(foldCarry(history([800, 900, 0])), 300));
-  check("a category without rollover carries nothing", () =>
-    assert.equal(foldCarry(history([500, 0], false)), 0));
+    assert.equal(carryForward(closing(1400)), -400));
+  check("the carry a cycle inherited is part of what it passes on", () =>
+    assert.equal(carryForward(closing(900, 200)), 300));
+  check("a category without rollover carries nothing, and inherits nothing", () => {
+    assert.equal(carryForward(closing(500, 0, false)), 0);
+    assert.equal(carryForward(closing(500, 400, false)), 0);
+  });
 
   // The guard §11.2 asks for: base and carry stay separate all the way to the
   // screen, so 2,000 − 1,800 never renders as "a 200 budget".

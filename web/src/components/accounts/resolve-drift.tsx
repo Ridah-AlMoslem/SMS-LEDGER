@@ -3,6 +3,13 @@
 /**
  * Closing a reconciliation alert, with the reason (SPEC §3.3).
  *
+ * Lives here rather than beside one page because two screens close the same
+ * alert: the account detail view, where you arrived because of one account, and
+ * Review's drift list, where you are working through every account at once.
+ * Two copies of a control whose copy is this specific — it deliberately refuses
+ * to look like it fixes a number it does not touch — is two copies to keep
+ * honest.
+ *
  * The note is required and the copy is blunt about what this does and does not
  * do. Two things it does not do:
  *
@@ -22,7 +29,7 @@ import { Loader } from "@/components/ui/loader";
 import { Sheet } from "@/components/ui/sheet";
 import type { ResolveResult } from "@/db/reconciliation";
 
-import { resolveAlert } from "../actions";
+import { resolveAlert } from "@/app/accounts/actions";
 
 export function ResolveDrift({
   alertId,

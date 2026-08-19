@@ -247,7 +247,16 @@ not need repeating.
 select column_name from information_schema.columns
  where table_name = 'budgets' and column_name in ('carry_in', 'carry_closed_at');
 -- two rows. None means 0009 has not run, and Home and Plan will both be down.
+
+select column_name from information_schema.columns
+ where table_name = 'settings' and column_name = 'last_export_at';
+-- one row. None means 0010 has not run, and /review will be down — that page
+-- reads it for the backup reminder, and the nightly /api/plan-tick writes it.
 ```
+
+0010 also adds three indexes on `raw_messages`. Nothing breaks without them, but
+the health panel is polled and every tile on it is an aggregate over that table,
+so without them each refresh is a sequential scan of every message ever received.
 
 ---
 

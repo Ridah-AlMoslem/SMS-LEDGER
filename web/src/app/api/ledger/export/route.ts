@@ -1,6 +1,7 @@
 import type { NextRequest } from "next/server";
 
 import { EXPORT_LIMIT, ledgerExport } from "@/db/ledger";
+import { toCsv } from "@/lib/csv";
 import { dateScope, exportName, readFilters } from "@/lib/ledger-filters";
 import { readSelection } from "@/lib/period-params";
 
@@ -55,35 +56,4 @@ export async function GET(request: NextRequest) {
   return new Response(toCsv(rows), {
     headers: { ...headers, "Content-Type": "text/csv; charset=utf-8" },
   });
-}
-
-/**
- * RFC 4180, plus two concessions to the two programs that will actually open
- * this file.
- *
- * The BOM is for Excel: without it, Excel reads a UTF-8 CSV as the local
- * codepage and every Arabic merchant name and biller in the file becomes
- * mojibake. It is invisible to everything else.
- *
- * The leading apostrophe on `=`, `+` and `@` is formula injection: a spreadsheet
- * treats a cell beginning with one as a formula, and these cells contain
- * attacker-adjacent text — SMS bodies from whoever sent them. `-` is left alone
- * so that a negative figure stays a number.
- */
-function toCsv(rows: Record<string, string>[]): string {
-  if (rows.length === 0) return "﻿";
-
-  const columns = Object.keys(rows[0]);
-  const lines = [columns.map(escape).join(",")];
-
-  for (const row of rows) {
-    lines.push(columns.map((c) => escape(row[c] ?? "")).join(","));
-  }
-
-  return `﻿${lines.join("\r\n")}\r\n`;
-}
-
-function escape(value: string): string {
-  const guarded = /^[=+@]/.test(value) ? `'${value}` : value;
-  return /[",\r\n]/.test(guarded) ? `"${guarded.replace(/"/g, '""')}"` : guarded;
 }

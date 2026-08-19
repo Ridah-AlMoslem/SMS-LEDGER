@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 
 import { getDb } from "@/db";
+import { raiseExportReminder } from "@/db/backup";
 import { closeCycle, unclosedCycles } from "@/db/budgets";
 import { runDetection } from "@/db/recurring";
 import { today } from "@/lib/periods";
@@ -28,6 +29,13 @@ import { today } from "@/lib/periods";
  *     nights. Asking which cycles still owe a carry makes a missed night cost
  *     nothing, where "close last month" would silently skip whatever happened
  *     while the project was asleep.
+ *   - **The backup reminder rides along.** §11.6: "a scheduled monthly export
+ *     reminder is worth the two lines it costs". It belongs on a schedule rather
+ *     than in the page render for the same reason as everything else here — a
+ *     reminder that only exists while you are looking at the Review screen
+ *     arrives exactly when you least need it. As an `alerts` row it reaches
+ *     Home's banner too. It runs last: it writes one row and nothing depends on
+ *     it, so a failure here must not cost a cycle its carry.
  *
  * This path shares its `/api/` prefix with the parser service (`vercel.json`
  * rewrites `/api/(.*)` to it, after the filesystem check that finds this route —
@@ -81,11 +89,13 @@ export async function POST(request: NextRequest) {
     }
 
     const detection = await runDetection(db, { now });
+    const backup = await raiseExportReminder(db);
 
     return Response.json({
       now,
       closed,
       detection: detection.ok ? detection.value : { error: detection.error },
+      backup,
     });
   } catch (err) {
     // The message, not a bare 500. `net._http_response` is where this ends up,

@@ -96,13 +96,17 @@ export default async function SettingsPage() {
         <h2 className="text-sm font-semibold tracking-wide uppercase opacity-70">Data</h2>
 
         {/* The Review tab is conditional; this route is not. When the queue is
-            empty the tab disappears and this stays the way in. */}
+            empty the tab disappears and this stays the way in — which is most
+            of the time, and is exactly when the rest of that page matters:
+            the health panel says whether ingestion is still alive, and the
+            backup is the only copy of the raw store that exists (§11.6). */}
         <div className="mt-2 divide-y divide-black/8 dark:divide-white/10">
           <Link href="/review" className="flex items-baseline justify-between gap-4 py-3">
             <div>
-              <p className="text-sm">Review queue &amp; health</p>
+              <p className="text-sm">Review queue, health &amp; backup</p>
               <p className="mt-0.5 text-xs opacity-55">
-                Parked messages, parse rate, last message received.
+                Last message received, parse and template rates, reconciliation, the §6 invariant
+                check, and the CSV/JSON export.
               </p>
             </div>
             <span className="shrink-0 text-sm">

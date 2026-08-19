@@ -8,6 +8,16 @@
  * has parked something, and **position 5 is never reassigned to anything
  * else**. When the queue drains, the slot is empty.
  *
+ * With one exception: **while you are on /review, the tab stays**, whatever the
+ * queue depth. Clearing the last parked group is a server action, and the
+ * layout that counts the queue is `force-dynamic`, so without this the tab that
+ * represents the page you are standing on disappears from under you at the
+ * moment you finish the work — the current route stops being reachable in the
+ * nav that is showing it, and the badge you were watching count down vanishes
+ * instead of reaching zero. It is also what makes arriving by URL with an empty
+ * queue coherent: the nav names where you are. The count is recomputed on every
+ * navigation regardless, so the slot empties as soon as you leave.
+ *
  * That empty slot is the point, and it is why this is a five-column grid
  * rather than a row of flex children. With `flex-1` on each item, four tabs
  * would each take a quarter of the bar and five would each take a fifth —
@@ -139,6 +149,7 @@ function TabLink({ tab, active, badge }: { tab: Tab; active: boolean; badge?: nu
 
 export function TabBar({ parked }: { parked: number }) {
   const pathname = usePathname();
+  const onReview = isActive(pathname, REVIEW.href);
 
   return (
     <nav
@@ -155,9 +166,13 @@ export function TabBar({ parked }: { parked: number }) {
 
         {/* Slot 5. Empty when the queue is empty — never backfilled. /review
             stays reachable by URL and from Settings; only the tab is
-            conditional, never the route. */}
-        {parked > 0 ? (
-          <TabLink tab={REVIEW} active={isActive(pathname, REVIEW.href)} badge={parked} />
+            conditional, never the route.
+
+            `onReview` holds the slot for the page you are currently on, so
+            emptying the queue does not remove the tab mid-navigation. See the
+            module comment. */}
+        {parked > 0 || onReview ? (
+          <TabLink tab={REVIEW} active={onReview} badge={parked} />
         ) : (
           <span aria-hidden="true" />
         )}

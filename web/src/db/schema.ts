@@ -9,7 +9,7 @@
  * Covers milestones 1–12 (SPEC §12).
  */
 
-import { sql } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import {
   boolean,
   check,
@@ -161,6 +161,20 @@ export const settings = pgTable(
     weekStartDow: integer("week_start_dow").notNull().default(0),
     /** Every bucket boundary is evaluated in this zone, never UTC. */
     timezone: text("timezone").notNull().default("Asia/Riyadh"),
+
+    /**
+     * §11.6 — when the raw store was last dumped to a file you hold.
+     *
+     * The reminder's whole credibility rests on this column: a monthly nag that
+     * cannot tell whether you already exported is one you learn to dismiss
+     * without reading. Stamped by `/api/raw-messages/export`, read by the
+     * nightly pass in `db/backup.ts`.
+     *
+     * NULL means never, which is a more urgent state than "a long time ago" and
+     * is rendered as such. Defaulting it to now() would claim a backup that
+     * does not exist.
+     */
+    lastExportAt: timestamp("last_export_at", { withTimezone: true }),
   },
   (t) => [check("settings_single_row", sql`${t.id} = 1`)],
 );
@@ -253,10 +267,25 @@ export const rawMessages = pgTable(
     llmResponse: jsonb("llm_response"),
   },
   (t) => [
-    // The parser tick claims work with this (SPEC §10.3).
+    // The parser tick claims work with this (SPEC §10.3). It also answers the
+    // health panel's per-status counts and its oldest-queued lookup without
+    // touching the heap.
     index("raw_messages_status_idx").on(t.status, t.receivedAt),
     // The review workbench groups the queue by shape (SPEC §10.7).
     index("raw_messages_shape_idx").on(t.shapeHash),
+    // §11.6's health panel, which is polled: "last message received" is a
+    // max() across every status, so the status index above cannot serve it.
+    index("raw_messages_received_idx").on(desc(t.receivedAt)),
+    // Template hit rate, over parsed messages only — a message that never
+    // reached a verdict has no method to attribute.
+    index("raw_messages_parsed_method_idx")
+      .on(t.parseMethod)
+      .where(sql`status = 'parsed'`),
+    // LLM calls this month against the free-tier cap. Empty while the Gemini
+    // fallback is deferred (§2), and an empty partial index costs nothing.
+    index("raw_messages_llm_idx")
+      .on(t.receivedAt)
+      .where(sql`parse_method = 'llm'`),
   ],
 );
 

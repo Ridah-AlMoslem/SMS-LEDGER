@@ -1,121 +1,70 @@
-import { desc, inArray, sql } from "drizzle-orm";
+/**
+ * Review — SPEC §10.6, §10.7, §11.6.
+ *
+ * Two screens in one, and the order down the page is the argument for putting
+ * them together:
+ *
+ *   1. **Is the pipeline alive?** The health panel, the alerts, the
+ *      reconciliation. Everything that says whether the numbers on every other
+ *      screen can be believed.
+ *   2. **What does it need from me?** The parked queue, grouped by shape, where
+ *      hand-processing one message resolves the other forty (§10.7).
+ *   3. **Do I have a copy?** Export, because the answer to (1) is eventually
+ *      "no" and the raw store is the only thing that cannot be rebuilt (§3.1).
+ *
+ * **This page is never empty.** The Review tab hides itself when nothing is
+ * parked (`components/tab-bar.tsx`), so the route is reached by URL or from
+ * Settings on exactly the days when the queue is clear — and the health panel,
+ * the invariant check and the backup are the reasons to come here on those
+ * days. A route whose only content was the queue would render a blank screen
+ * for anyone who followed a permanent link to it.
+ *
+ * One `loadReview` for everything after settings — never a `Promise.all`. A
+ * fan-out of independent statements onto Supabase's transaction pooler stalls
+ * permanently rather than failing (`db/index.ts`), and this is the screen a
+ * person leaves open and refreshes.
+ */
 
-import { getDb, schema } from "@/db";
+import Link from "next/link";
+
+import { loadReview } from "@/db/review";
+import { loadSettings } from "@/db/settings";
+import { rankAlerts, reviewQueueAlert } from "@/lib/alerts";
 import { reason } from "@/lib/errors";
-import { timeOfDay } from "@/lib/format";
-import {
-  type Health,
-  type ParkedMessage,
-  type ShapeGroup,
-  groupByShape,
-  ingestionStale,
-  parseRate,
-  parsingStalled,
-} from "@/lib/review";
+import { fromLocalInput, timeOfDay } from "@/lib/format";
+import { masterInvariant } from "@/lib/invariant";
+import { periodBounds, periodLabel, today } from "@/lib/periods";
+import type { PeriodSettings } from "@/lib/settings";
+import { type ShapeGroup, groupByShape, llmStatus } from "@/lib/review";
 
+import { AlertList } from "./alert-list";
+import { DriftList } from "./drift-list";
+import { ExportPanel } from "./export-panel";
+import { HealthPanel } from "./health-panel";
 import { dismissGroup, restoreGroup, retryGroup } from "./actions";
 import { DeriveForm } from "./derive-form";
 
 export const dynamic = "force-dynamic";
 
-async function load() {
-  const db = getDb();
+/**
+ * The calendar month the LLM quota is measured in, as an instant.
+ *
+ * A calendar month, not the salary cycle — §2's cap is a billing figure and
+ * Google resets it on the 1st. Built through `fromLocalInput` so the boundary
+ * lands in the configured zone rather than UTC; §5.5 forbids naming that zone
+ * anywhere outside `settings`, which is also why this is not a
+ * `date_trunc('month', now())` in the query.
+ */
+function monthWindow(now: Date, settings: PeriodSettings) {
+  const day = today(now, settings); // YYYY-MM-DD in the configured zone
+  const [year, month] = day.split("-").map(Number);
 
-  const parked = (await db
-    .select({
-      id: schema.rawMessages.id,
-      sender: schema.rawMessages.sender,
-      body: schema.rawMessages.body,
-      receivedAt: schema.rawMessages.receivedAt,
-      status: schema.rawMessages.status,
-      shapeHash: schema.rawMessages.shapeHash,
-      lastError: schema.rawMessages.lastError,
-      ignoredReason: schema.rawMessages.ignoredReason,
-      attempts: schema.rawMessages.attempts,
-    })
-    .from(schema.rawMessages)
-    .where(inArray(schema.rawMessages.status, ["needs_review", "failed"]))
-    .orderBy(desc(schema.rawMessages.receivedAt))
-    .limit(500)) as ParkedMessage[];
+  const start = fromLocalInput(`${day.slice(0, 7)}-01T00:00`, settings) ?? new Date(0);
+  // Day 0 of the next month is the last day of this one — the JS idiom, and it
+  // is right for February in both leap and non-leap years.
+  const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
 
-  const dismissed = (await db
-    .select({
-      id: schema.rawMessages.id,
-      sender: schema.rawMessages.sender,
-      body: schema.rawMessages.body,
-      receivedAt: schema.rawMessages.receivedAt,
-      status: schema.rawMessages.status,
-      shapeHash: schema.rawMessages.shapeHash,
-      lastError: schema.rawMessages.lastError,
-      ignoredReason: schema.rawMessages.ignoredReason,
-      attempts: schema.rawMessages.attempts,
-    })
-    .from(schema.rawMessages)
-    .where(sql`${schema.rawMessages.ignoredReason} = 'user'`)
-    .orderBy(desc(schema.rawMessages.receivedAt))
-    .limit(200)) as ParkedMessage[];
-
-  // `lastReceived` is formatted to an explicit UTC ISO-8601 string rather than
-  // selected as a timestamptz. Drizzle only applies its column mappers to
-  // columns it knows; the result of a raw `sql` fragment is passed through as
-  // the driver produced it, and postgres-js hands back a string for an
-  // aggregate it cannot type. Declaring it `sql<Date>` did not make it one —
-  // it only moved the failure to runtime, where ingestionStale() called
-  // .getTime() on a string and took the whole page down.
-  const [counts] = await db
-    .select({
-      lastReceived: sql<
-        string | null
-      >`to_char(max(${schema.rawMessages.receivedAt}) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
-      // Same string treatment as lastReceived, and for the same reason: a raw
-      // `sql` fragment bypasses Drizzle's column mappers, so this must not be
-      // handed to Date() as whatever the driver decided to return.
-      oldestQueued: sql<
-        string | null
-      >`to_char(min(${schema.rawMessages.receivedAt}) filter (
-           where ${schema.rawMessages.status} in ('pending', 'processing')
-         ) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')`,
-      pending: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'pending')::int`,
-      processing: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'processing')::int`,
-      parsed: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'parsed')::int`,
-      ignored: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'ignored')::int`,
-      needsReview: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'needs_review')::int`,
-      failed: sql<number>`count(*) filter (where ${schema.rawMessages.status} = 'failed')::int`,
-    })
-    .from(schema.rawMessages);
-
-  const accounts = await db
-    .select({ slug: schema.accounts.slug, name: schema.accounts.name })
-    .from(schema.accounts)
-    .orderBy(schema.accounts.sortOrder);
-
-  const health: Health = {
-    lastReceived: counts?.lastReceived ? new Date(counts.lastReceived) : null,
-    oldestQueued: counts?.oldestQueued ? new Date(counts.oldestQueued) : null,
-    pending: Number(counts?.pending ?? 0),
-    processing: Number(counts?.processing ?? 0),
-    parsed: Number(counts?.parsed ?? 0),
-    ignored: Number(counts?.ignored ?? 0),
-    needsReview: Number(counts?.needsReview ?? 0),
-    failed: Number(counts?.failed ?? 0),
-  };
-
-  return { parked, dismissed, accounts, health };
-}
-
-function Stat({ label, value, tone }: { label: string; value: string; tone?: "warn" }) {
-  return (
-    <div className="rounded-lg bg-black/[0.03] p-3 dark:bg-white/[0.06]">
-      <p className="text-xs opacity-60">{label}</p>
-      <p
-        className={`tabular mt-0.5 text-lg font-medium ${
-          tone === "warn" ? "text-amber-600 dark:text-amber-400" : ""
-        }`}
-      >
-        {value}
-      </p>
-    </div>
-  );
+  return { start, days };
 }
 
 function GroupCard({
@@ -202,109 +151,117 @@ function GroupCard({
 }
 
 export default async function ReviewPage() {
-  let data: Awaited<ReturnType<typeof load>>;
+  const now = new Date();
+  const settings = await loadSettings();
+  const cycle = periodBounds("cycle", today(now, settings), settings).start;
+  const month = monthWindow(now, settings);
 
+  let data: Awaited<ReturnType<typeof loadReview>>;
   try {
-    data = await load();
+    data = await loadReview({ cycle, monthStart: month.start });
   } catch (err) {
     return (
       <main>
         <h1 className="text-xl font-semibold">Review</h1>
-        <p className="mt-4 text-sm opacity-70">
-          {reason(err)}
-        </p>
+        <p className="mt-4 text-sm opacity-70">{reason(err)}</p>
       </main>
     );
   }
 
   const groups = groupByShape(data.parked);
   const dismissedGroups = groupByShape(data.dismissed);
-  const rate = parseRate(data.health);
-  const stale = ingestionStale(data.health.lastReceived);
-  const queued = data.health.pending + data.health.processing;
-  const stalled = parsingStalled(data.health.oldestQueued);
+
+  // Every account, not just the active ones — see `accountsQuery` in
+  // `db/review.ts`. Both sides of the invariant must see one universe of rows,
+  // or a filter reads as a classification error.
+  const invariant = masterInvariant({
+    accounts: data.accounts,
+    movements: data.movements,
+    income: data.income,
+    expense: data.expense,
+  });
+
+  const parked = data.health.needsReview + data.health.failed;
+  const alerts = rankAlerts(data.alerts, reviewQueueAlert(parked));
+
+  const accountsForForm = data.accounts
+    .filter((a) => a.isActive)
+    .map((a) => ({ slug: a.slug, name: a.name }));
 
   return (
     <main>
       <h1 className="text-xl font-semibold">Review</h1>
 
-      {/* §11.6 — the honest counterpart to a dashboard that claims to know your
-          finances. If ingestion OR parsing dies, this is where you find out.
-          "Queued" is here because it is the only place it can be: a message
-          waiting to be parsed is in no other list on this page, so without a
-          tile of its own it is a message that arrived and then vanished. */}
-      <div className="mt-5 grid grid-cols-2 gap-2 sm:grid-cols-5">
-        <Stat
-          label="Last message"
-          value={data.health.lastReceived ? timeOfDay(data.health.lastReceived) : "never"}
-          tone={stale ? "warn" : undefined}
-        />
-        <Stat label="Parsed" value={String(data.health.parsed)} />
-        <Stat label="Queued" value={String(queued)} tone={stalled ? "warn" : undefined} />
-        <Stat
-          label="Waiting on you"
-          value={String(data.health.needsReview + data.health.failed)}
-          tone={data.health.needsReview + data.health.failed > 0 ? "warn" : undefined}
-        />
-        <Stat
-          label="Parse rate"
-          value={rate === null ? "—" : `${Math.round(rate * 100)}%`}
-        />
-      </div>
+      <HealthPanel
+        health={data.health}
+        accounts={data.accounts.filter((a) => a.isActive)}
+        invariant={invariant}
+        llm={llmStatus(data.health.llmThisMonth, month.days)}
+        cycleLabel={periodLabel("cycle", cycle, settings)}
+        now={now}
+      />
 
-      {stale && (
-        <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
-          No message in over 24 hours. iOS message automations fail silently — check the
-          Shortcut is still enabled.
+      <AlertList alerts={alerts} />
+
+      <DriftList rows={data.drift} />
+
+      <section className="mt-10" aria-labelledby="queue-heading">
+        <h2
+          id="queue-heading"
+          className="text-sm font-semibold tracking-wide uppercase opacity-70"
+        >
+          Messages the parser couldn&rsquo;t read
+        </h2>
+        <p className="mt-1 text-xs opacity-50">
+          Grouped by format, because failures arrive in format-shaped clusters — hand-process one
+          and the rest resolve themselves (§10.7).
         </p>
-      )}
 
-      {stalled && (
-        <p className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
-          {queued} message{queued === 1 ? "" : "s"} arrived and {queued === 1 ? "has" : "have"}{" "}
-          not been parsed — the oldest since{" "}
-          {data.health.oldestQueued ? timeOfDay(data.health.oldestQueued) : "—"}. The tick runs
-          every minute, so this means it is not draining: check{" "}
-          <code>net._http_response</code> for a 401 (CRON_SECRET disagrees) or an error, and{" "}
-          <code>cron.job</code> that the schedule is still active.
-        </p>
-      )}
+        <div className="mt-3 space-y-4">
+          {groups.length === 0 ? (
+            <div className="rounded-xl border border-black/10 p-8 text-center dark:border-white/15">
+              <p className="font-medium">Nothing waiting</p>
+              <p className="mt-2 text-sm opacity-70">
+                Every message either parsed or was correctly ignored. The Review tab is hidden
+                while this is true —{" "}
+                <Link href="/settings" className="underline underline-offset-2">
+                  Settings
+                </Link>{" "}
+                is the permanent way back to this page.
+              </p>
+            </div>
+          ) : (
+            groups.map((g) => (
+              <GroupCard key={g.key} group={g} accounts={accountsForForm} />
+            ))
+          )}
+        </div>
 
-      <div className="mt-6 space-y-4">
-        {groups.length === 0 ? (
-          <div className="rounded-xl border border-black/10 p-8 text-center dark:border-white/15">
-            <p className="font-medium">Nothing waiting</p>
-            <p className="mt-2 text-sm opacity-70">
-              Every message either parsed or was correctly ignored.
+        {dismissedGroups.length > 0 && (
+          <section className="mt-6">
+            <h3 className="text-sm font-semibold tracking-wide uppercase opacity-70">
+              Dismissed by you
+            </h3>
+            <p className="mt-1 text-xs opacity-50">
+              Kept, never deleted — raw messages are append-only, so a mistake here is always
+              recoverable.
             </p>
-          </div>
-        ) : (
-          groups.map((g) => <GroupCard key={g.key} group={g} accounts={data.accounts} />)
+            <div className="mt-3 space-y-4">
+              {dismissedGroups.map((g) => (
+                <GroupCard key={g.key} group={g} accounts={accountsForForm} dismissed />
+              ))}
+            </div>
+          </section>
         )}
-      </div>
 
-      {dismissedGroups.length > 0 && (
-        <section className="mt-10">
-          <h2 className="text-sm font-semibold tracking-wide uppercase opacity-70">
-            Dismissed by you
-          </h2>
-          <p className="mt-1 text-xs opacity-50">
-            Kept, never deleted — raw messages are append-only, so a mistake here is always
-            recoverable.
-          </p>
-          <div className="mt-3 space-y-4">
-            {dismissedGroups.map((g) => (
-              <GroupCard key={g.key} group={g} accounts={data.accounts} dismissed />
-            ))}
-          </div>
-        </section>
-      )}
+        <p className="mt-4 text-xs opacity-50">
+          &ldquo;Teach the parser&rdquo; turns one message into a template and reparses every
+          message sharing its format. Note that a format with different merchant names produces
+          different groups — free text is not generalised in the shape hash.
+        </p>
+      </section>
 
-      <p className="mt-8 text-xs opacity-50">
-        &ldquo;Teach the parser&rdquo; turns one message into a template and reparses every
-        message sharing its format. Note that a format with different merchant names produces
-        different groups — free text is not generalised in the shape hash.
-      </p>
+      <ExportPanel lastExportAt={data.lastExportAt} now={now} />
     </main>
   );
 }

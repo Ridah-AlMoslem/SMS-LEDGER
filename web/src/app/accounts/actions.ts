@@ -11,11 +11,17 @@ export type SaveResult =
   | { ok: false; error: string };
 
 /** Every screen a booked adjustment moves. The leg is a transaction: it has a
- *  date, sits in the ledger, and shifts the net-worth figure on Home. */
+ *  date, sits in the ledger, and shifts the net-worth figure on Home.
+ *
+ *  Review is in the list because the master invariant (§6) reads the same legs:
+ *  an adjustment moves net worth without being income or expense, so a balance
+ *  corrected here changes what that panel has to explain. It is also where the
+ *  drift alert this closes is listed a second time. */
 function revalidateAll(slug?: string | null) {
   revalidatePath("/accounts");
   if (slug) revalidatePath(`/accounts/${slug}`);
   revalidatePath("/ledger");
+  revalidatePath("/review");
   revalidatePath("/");
 }
 

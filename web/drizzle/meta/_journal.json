@@ -71,6 +71,13 @@
       "when": 1786866400000,
       "tag": "0009_plan_carry_goals_series",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786952800000,
+      "tag": "0010_health_and_backup",
+      "breakpoints": true
     }
   ]
 }

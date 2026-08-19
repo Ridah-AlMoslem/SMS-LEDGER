@@ -19,7 +19,7 @@ import { periodBounds, periodLabel, shortLabel, today } from "@/lib/periods";
 import { readSelection } from "@/lib/period-params";
 
 import { BackLink } from "./back-link";
-import { ResolveDrift } from "./resolve-drift";
+import { ResolveDrift } from "@/components/accounts/resolve-drift";
 
 export const dynamic = "force-dynamic";
 

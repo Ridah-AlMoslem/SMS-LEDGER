@@ -112,6 +112,21 @@ const TYPES: Record<
     title: (p) => `${str(p.name, "A loan")} payment is due`,
     href: (p) => (p.slug ? `/accounts/${str(p.slug)}` : "/accounts"),
   },
+  /**
+   * §11.6's monthly export reminder. Raised by the nightly pass in
+   * `db/backup.ts`, cleared by it once the raw store has been dumped.
+   *
+   * "Never" is worded as its own sentence rather than as "0 days ago": a
+   * database that has never been copied anywhere is a different situation from
+   * one whose copy is stale, and it is the one worth a full stop.
+   */
+  export_reminder: {
+    title: (p) =>
+      p.never
+        ? "The raw messages have never been backed up — nothing outside this database can rebuild the ledger"
+        : `The raw messages haven't been backed up in ${str(p.days, "30")} days`,
+    href: () => "/review",
+  },
 };
 
 /** An unknown type still gets a line and a destination. */
